@@ -1,12 +1,12 @@
 package = 'config'
 version = 'scm-1'
 source  = {
-    url    = 'git://github.com/Mons/tnt-config.git',
+    url    = 'git://github.com/moonlibs/tnt-config.git',
     branch = 'master',
 }
 description = {
     summary  = "Package for loading external lua config",
-    homepage = 'https://github.com/Mons/tnt-config.git',
+    homepage = 'https://github.com/moonlibs/tnt-config.git',
     license  = 'BSD',
 }
 dependencies = {

@@ -107,7 +107,11 @@ else
 				def = k
 				k = self
 			end
-			return M.flat[k] or def
+			if M.flat[k] ~= nil then
+                                return M.flat[k]
+                        else
+                                return def
+                        end
 		end
 	},{
 		__call = function(M,file)

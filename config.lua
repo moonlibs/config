@@ -23,6 +23,20 @@ local static = {
 	slab_alloc_factor  = true,
 	slab_alloc_minimal = true,
 	slab_alloc_maximal = true,
+--- Refactored names. Not dynamic ---
+	memtx_memory              = true,
+	memtx_max_tuple_size      = true,
+	memtx_min_tuple_size      = true,
+	memtx_dir                 = true,
+	vinyl_dir                 = true,
+	vinyl_bloom_fpr           = true,
+	vinyl_cache               = true,
+	vinyl_memory              = true,
+	vinyl_page_size           = true,
+	vinyl_range_size          = true,
+	vinyl_run_count_per_level = true,
+	vinyl_run_size_ratio      = true,
+	vinyl_threads             = true,
 	sophia             = true,
 	-- sophia = {
 	-- 	 page_size    = 131072,
@@ -37,6 +51,7 @@ local static = {
 --- Logging. Not dynamic ---
 	logger               = true,
 	logger_nonblock      = true,
+	log                  = true,
 }
 
 local dynamic = {
@@ -44,13 +59,17 @@ local dynamic = {
 --- Snapshot daemon. Dynamic ---
 	snapshot_period     = true,
 	snapshot_count      = true,
+--- Refactored names. Dynamic ---
+	checkpoint_count    = true,
+	checkpoint_interval = true,
 --- Binary logging and snapshots. Dynamic ---
 	panic_on_wal_error  = true,
 	snap_io_rate_limit  = true,
 	wal_mode            = true,
-	
+
 --- Replication source. Dynamic ---
 	replication_source  = true,
+	replication         = true,
 
 --- Networking. Dynamic ---
 	listen              = true,
@@ -167,7 +186,7 @@ else
 				elseif dynamic[k] then dynconf[k] = v
 				else                   appconf[k] = v
 				end
-				
+
 				if static[k] or dynamic[k] then
 					entire_boxconf[k] = v
 				end

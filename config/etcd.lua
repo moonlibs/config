@@ -97,7 +97,7 @@ function M:request(method, path, args )
 	end
 	local qs
 	if #query > 0 then qs = '?'..table.concat(query) else  qs = '' end
-	local body = ''
+	local body = args and args.body or ''
 	local lasterror
 
 	for _,endpoint in pairs(self.endpoints) do

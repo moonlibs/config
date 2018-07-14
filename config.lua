@@ -212,6 +212,28 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	return cfg
 end
 
+local function is_replication_changed (old_conf, new_conf)
+	if type(old_conf) == 'table' and type(new_conf) == 'table' then
+		local changed_replicas = {}
+		for _, replica in pairs(old_conf) do
+			changed_replicas[replica] = true
+		end
+
+		for _, replica in pairs(new_conf) do
+			if changed_replicas[replica] then
+				changed_replicas[replica] = nil
+			else
+				return true
+			end
+		end
+
+		-- if we have some changed_replicas left, then we definitely need to reconnect
+		return not not next(changed_replicas)
+	else
+		return old_conf ~= new_conf
+	end
+end
+
 local M
 --if rawget(_G,'config') then
 --	M = rawget(_G,'config')
@@ -316,19 +338,26 @@ local M
 			if args.boxcfg then
 				args.boxcfg( cfg.box )
 			else
-				-- local replication = cfg.box.replication_source or cfg.box.replication
-				-- cfg.box.replication = nil
-				-- cfg.box.replication_source = nil
-
-				-- if type(box.cfg) == 'function' then
-				-- 	box.cfg( cfg.box )
-				-- else
+				if type(box.cfg) == 'function' then
 					box.cfg( cfg.box )
-				-- end
+				else
+					local replication     = cfg.box.replication_source or cfg.box.replication
+					local box_replication = box.cfg.replication_source or box.cfg.replication
 
-				-- if replication then
-				-- 	box.cfg{ replication = replication }
-				-- end
+					if not is_replication_changed(replication, box_replication) then
+						local r  = cfg.box.replication
+						local rs = cfg.box.replication_source
+						cfg.box.replication        = nil
+						cfg.box.replication_source = nil
+
+						box.cfg( cfg.box )
+
+						cfg.box.replication        = r
+						cfg.box.replication_source = rs
+					else
+						box.cfg( cfg.box )
+					end
+				end
 			end
 			-- print(string.format("Box configured"))
 

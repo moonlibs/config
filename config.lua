@@ -144,6 +144,19 @@ local function deep_copy(src)
 	return t
 end
 
+local function toboolean(v)
+	if v then
+		if type(v) == 'boolean' then return v end
+		v = tostring(v):lower()
+		local n = tonumber(v)
+		if n then return n ~= 0 end
+		if v == 'true' or v == 'yes' then
+			return true
+		end
+	end
+	return false
+end
+
 local function etcd_load( M, etcd_conf, local_cfg )
 
 	local etcd = require 'config.etcd' (etcd_conf)
@@ -170,7 +183,11 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	local members = {}
 	for k,v in pairs(inst_cfg) do
 		if v.cluster == cfg.cluster then -- and k ~= instance_name then
-			table.insert(members,v)
+			if not toboolean(v.disabled) then
+				table.insert(members,v)
+			else
+				log.warn("Member '%s' from cluster '%s' listening on %s is disabled", instance_name, v.cluster, v.box.listen)
+			end
 		end
 	end
 

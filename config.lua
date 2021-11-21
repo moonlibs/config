@@ -352,6 +352,26 @@ master_selection_policies = {
 			return master_selection_policies['etcd.instance.single'](M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 		end
 	end;
+	['etcd.cluster.raft'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
+		log.info("Using policy etcd.cluster.raft")
+		local cfg = {}
+		deep_merge(cfg, common_cfg)
+		deep_merge(cfg, instance_cfg)
+
+		assert(cluster_cfg.replicaset_uuid,"Need cluster uuid")
+		cfg.box.replicaset_uuid = cluster_cfg.replicaset_uuid
+
+		if not cfg.box.election_mode then
+			cfg.box.election_mode = 'candidate'
+		end
+		if not cfg.box.replication_synchro_quorum then
+			cfg.box.replication_synchro_quorum = 'N/2+1'
+		end
+
+		deep_merge(cfg, local_cfg)
+
+		return cfg
+	end;
 }
 
 local function cast_types(c)
@@ -805,6 +825,9 @@ local M
 								)
 							else
 								log.info("Start non-bootstrapped tidy loading with ro=%s (dir=%s)",cfg.box.read_only, snap_dir)
+								if cfg.box.election_mode then
+									cfg.box.election_mode = 'off'
+								end
 							end
 						end
 

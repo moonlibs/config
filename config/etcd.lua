@@ -1,10 +1,7 @@
-local fiber = require 'fiber'
-local yaml = require 'yaml'
 local json = require 'json'
 local log = require 'log'
 
 local http_client = require 'http.client'
-local urilib = require('uri')
 local digest = require 'digest'
 
 local M = {}
@@ -31,14 +28,10 @@ function M.errstr(code)
 	return M.err[ tonumber(code) ] or string.format("Unknown error %s",code)
 end
 
-setmetatable(M,{
-	__call = function(M,...)
-		return M:new(...)
-	end
-})
+setmetatable(M,{ __call = M.new })
 
-function M.new(M,options)
-	local self = setmetatable({},{__index=M})
+function M.new(mod,options)
+	local self = setmetatable({},{__index=mod})
 	self.endpoints = options.endpoints or {'http://127.0.0.1:4001','http://127.0.0.1:2379'}
 	-- self.prefix    = options.prefix or ''
 	self.timeout   = options.timeout or 1

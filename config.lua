@@ -1,12 +1,9 @@
 local log = require 'log'
 local fio = require 'fio'
-local con = require 'console'
-local fiber = require 'fiber'
 local json = require 'json'
 local yaml = require 'yaml'
 local digest = require 'digest'
 json.cfg{ encode_invalid_as_nil = true }
--- yaml.cfg{ encode_invalid_as_nil = true }
 
 local function lookaround(fun)
 	local vars = {}
@@ -33,7 +30,6 @@ local function peek_vars()
 
 	local steps = {}
 	local peekf = box.cfg
-	local allow_lock_unwrap = true
 	local allow_ctl_unwrap = true
 	while true do
 		local prevf = peekf
@@ -48,7 +44,7 @@ local function peek_vars()
 			error(string.format("Neither function nor callable argument %s after steps: %s", peekf, table.concat(steps, ", ")))
 		end
 
-		local vars, count = lookaround(peekf)
+		local vars, _ = lookaround(peekf)
 		if allow_ctl_unwrap and vars.orig_cfg then
 			-- It's a wrap of tarantoolctl, unwrap and repeat
 			peekf = vars.orig_cfg
@@ -65,7 +61,7 @@ local function peek_vars()
 			table.insert(steps,"ctl-orig_cfg_call")
 		elseif vars.dynamic_cfg then
 			log.info("Found config by steps: %s", table.concat(steps, ", "))
-			for k,v in pairs(peek) do
+			for k in pairs(peek) do
 				if vars[k] ~= nil then
 					peek[k] = vars[k]
 				else
@@ -144,7 +140,7 @@ end
 local function get_opt()
 	local take = false
 	local key
-	for k,v in ipairs(arg) do
+	for _,v in ipairs(arg) do
 		if take then
 			if key == 'config' or key == 'c' then
 				return v
@@ -201,7 +197,7 @@ end
 
 local function is_array(a)
 	local len = 0
-	for k,v in pairs(a) do
+	for k in pairs(a) do
 		len = len + 1
 		if type(k) ~= 'number' then
 			return false
@@ -275,51 +271,51 @@ end
 
 local master_selection_policies;
 master_selection_policies = {
-	['etcd.instance.single'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
+	['etcd.instance.single'] = function(_, _, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 		local cfg = {}
 		deep_merge(cfg, common_cfg)
 		deep_merge(cfg, instance_cfg)
-		
+
 		if cluster_cfg then
 			error("Cluster config should not exist for single instance config")
 		end
-		
+
 		deep_merge(cfg, local_cfg)
-		
+
 		if cfg.box.read_only == nil then
 			log.info("Instance have no read_only option, set read_only=false")
 			cfg.box.read_only = false
 		end
-		
+
 		if cfg.box.instance_uuid and not cfg.box.replicaset_uuid then
 			cfg.box.replicaset_uuid = cfg.box.instance_uuid
 		end
-		
+
 		log.info("Using policy etcd.instance.single, read_only=%s",cfg.box.read_only)
 		return cfg
 	end;
-	['etcd.instance.read_only'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
+	['etcd.instance.read_only'] = function(M, _, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 		local cfg = {}
 		deep_merge(cfg, common_cfg)
 		deep_merge(cfg, instance_cfg)
-		
+
 		if cluster_cfg then
 			log.info("cluster=%s",json.encode(cluster_cfg))
 			assert(cluster_cfg.replicaset_uuid,"Need cluster uuid")
 			cfg.box.replicaset_uuid = cluster_cfg.replicaset_uuid
 		end
-		
+
 		deep_merge(cfg, local_cfg)
-		
+
 		if M.default_read_only and cfg.box.read_only == nil then
 			log.info("Instance have no read_only option, set read_only=true")
 			cfg.box.read_only = true
 		end
-		
+
 		log.info("Using policy etcd.instance.read_only, read_only=%s",cfg.box.read_only)
 		return cfg
 	end;
-	['etcd.cluster.master'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
+	['etcd.cluster.master'] = function(_, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 		log.info("Using policy etcd.cluster.master")
 		local cfg = {}
 		deep_merge(cfg, common_cfg)
@@ -398,7 +394,7 @@ local function gen_cluster_uuid(cluster_name)
 			d1,0,0,0
 		)
 	end
-	error("Can't generate uuid for instance "..instance_name, 2)
+	error("Can't generate uuid for instance "..cluster_name, 2)
 end
 
 local function etcd_load( M, etcd_conf, local_cfg )
@@ -435,7 +431,7 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	end
 
 	function M.etcd.get_instances(e)
-		local all_instances_cfg = etcd:list(prefix .. "/instances")
+		local all_instances_cfg = e:list(prefix .. "/instances")
 		for instance_name,inst_cfg in pairs(all_instances_cfg) do
 			cast_types(inst_cfg.box)
 			if etcd_conf.uuid == 'auto' and not inst_cfg.box.instance_uuid then
@@ -446,7 +442,7 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	end
 
 	function M.etcd.get_clusters(e)
-		local all_clusters_cfg = etcd:list(prefix .. "/clusters") or etcd:list(prefix .. "/shards")
+		local all_clusters_cfg = e:list(prefix .. "/clusters") or etcd:list(prefix .. "/shards")
 		for cluster_name,cluster_cfg in pairs(all_clusters_cfg) do
 			cast_types(cluster_cfg)
 			if etcd_conf.uuid == 'auto' and not cluster_cfg.replicaset_uuid then
@@ -457,7 +453,7 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	end
 
 	function M.etcd.get_all(e)
-		local all_cfg = etcd:list(prefix)
+		local all_cfg = e:list(prefix)
 		cast_types(all_cfg.common.box)
 		for instance_name,inst_cfg in pairs(all_cfg.instances) do
 			cast_types(inst_cfg.box)
@@ -512,11 +508,11 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	if not master_policy then
 		error(string.format("Unknown master_selection_policy: %s",M.master_selection_policy),0)
 	end
-	
+
 	local cfg = master_policy(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 
 	local members = {}
-	for k,v in pairs(all_instances_cfg) do
+	for _,v in pairs(all_instances_cfg) do
 		if v.cluster == cfg.cluster then -- and k ~= instance_name then
 			if not toboolean(v.disabled) then
 				table.insert(members,v)
@@ -743,13 +739,12 @@ local M
 			local cfg = load_config()
 
 			M._flat = flatten(cfg)
-			
+
 			if args.on_before_cfg then
 				args.on_before_cfg(M,cfg)
 			end
 
 			if args.mkdir then
-				local fio = require 'fio'
 				if not ( fio.path and fio.mkdir ) then
 					error(string.format("Tarantool version %s is too old for mkdir: fio.path is not supported", _TARANTOOL),2)
 				end
@@ -769,12 +764,12 @@ local M
 					end
 				end
 			end
-			
+
 			if cfg.box.remote_addr then
 				cfg.box.remote_addr = nil
 			end
 
-			
+
 			-- print(string.format("Starting app: %s", yaml.encode(cfg.box)))
 			local boxcfg
 
@@ -796,11 +791,10 @@ local M
 								end
 							end
 							local bootstrapped = false
-							local fio = require 'fio'
 							for _,v in pairs(fio.glob(snap_dir..'/*.snap')) do
 								bootstrapped = v
 							end
-							
+
 							if bootstrapped then
 								print("Have etcd, use tidy load")
 								local ro = cfg.box.read_only
@@ -813,7 +807,7 @@ local M
 								log.info("Start non-bootstrapped tidy loading with ro=%s (dir=%s)",cfg.box.read_only, snap_dir)
 							end
 						end
-						
+
 						log.info("Just before box.cfg %s", yaml.encode( cfg.box ))
 
 						;(boxcfg or box.cfg)( cfg.box )
@@ -826,7 +820,7 @@ local M
 						-- since load_config loads config also for reloading it removes non-dynamic options
 						-- therefore, they would be absent, but should not be passed. remove them
 						if diff_box then
-							for key, val in pairs(diff_box) do
+							for key in pairs(diff_box) do
 								if peek.dynamic_cfg[key] == nil then
 									diff_box[key] = nil
 								end

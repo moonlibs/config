@@ -361,11 +361,16 @@ master_selection_policies = {
 		assert(cluster_cfg.replicaset_uuid,"Need cluster uuid")
 		cfg.box.replicaset_uuid = cluster_cfg.replicaset_uuid
 
+		if cfg.box.election_mode == 'off' or cfg.box.election_mode == nil then
+			log.info("Force box.read_only=true for election_mode=off")
+			cfg.box.read_only = true
+		end
+
 		if not cfg.box.election_mode then
-			cfg.box.election_mode = 'candidate'
+			cfg.box.election_mode = M.default_election_mode
 		end
 		if not cfg.box.replication_synchro_quorum then
-			cfg.box.replication_synchro_quorum = 'N/2+1'
+			cfg.box.replication_synchro_quorum = M.default_synchro_quorum
 		end
 
 		deep_merge(cfg, local_cfg)
@@ -610,9 +615,6 @@ local function is_replication_changed (old_conf, new_conf)
 end
 
 local M
---if rawget(_G,'config') then
---	M = rawget(_G,'config')
---else
 	M = setmetatable({
 		console = {};
 		get = function(self,k,def)
@@ -651,6 +653,8 @@ local M
 			if args.tidy_load == nil then
 				args.tidy_load = true
 			end
+			M.default_election_mode = args.default_election_mode or 'candidate'
+			M.default_synchro_quorum = args.default_synchro_quorum or 'N/2+1'
 			M.default_read_only = args.default_read_only or false
 			M.master_selection_policy = args.master_selection_policy
 			M.default = args.default
@@ -893,6 +897,5 @@ local M
 		end
 	})
 	rawset(_G,'config',M)
---end
 
 return M

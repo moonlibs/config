@@ -361,16 +361,21 @@ master_selection_policies = {
 		assert(cluster_cfg.replicaset_uuid,"Need cluster uuid")
 		cfg.box.replicaset_uuid = cluster_cfg.replicaset_uuid
 
+		if not cfg.box.election_mode then
+			cfg.box.election_mode = M.default_election_mode
+		end
+
 		if cfg.box.election_mode == 'off' or cfg.box.election_mode == nil then
 			log.info("Force box.read_only=true for election_mode=off")
 			cfg.box.read_only = true
 		end
 
-		if not cfg.box.election_mode then
-			cfg.box.election_mode = M.default_election_mode
-		end
 		if not cfg.box.replication_synchro_quorum then
 			cfg.box.replication_synchro_quorum = M.default_synchro_quorum
+		end
+
+		if cfg.box.election_mode == "candidate" then
+			cfg.box.read_only = false
 		end
 
 		deep_merge(cfg, local_cfg)
@@ -419,7 +424,7 @@ local function gen_cluster_uuid(cluster_name)
 			d1,0,0,0
 		)
 	end
-	error("Can't generate uuid for instance "..cluster_name, 2)
+	error("Can't generate uuid for cluster "..cluster_name, 2)
 end
 
 local function etcd_load( M, etcd_conf, local_cfg )
@@ -694,7 +699,6 @@ local M
 					if ret ~= nil then
 						print("Return value from "..path.." is ignored")
 					end
-					return
 				end
 
 				function methods.print(...)
@@ -823,15 +827,25 @@ local M
 								print("Have etcd, use tidy load")
 								local ro = cfg.box.read_only
 								cfg.box.read_only = true
+								cfg.box.replication_connect_quorum = 1
+								cfg.box.replication_connect_timeout = 1
 								log.info("Start tidy loading with ro=true%s (snap=%s)",
 									ro ~= true and string.format(' (would be %s)',ro) or '',
 									bootstrapped
 								)
 							else
 								log.info("Start non-bootstrapped tidy loading with ro=%s (dir=%s)",cfg.box.read_only, snap_dir)
-								if cfg.box.election_mode then
-									cfg.box.election_mode = 'off'
+								local N_2_1
+								local n_ups = #(cfg.box.replication or {})
+								if n_ups == 0 then
+									N_2_1 = 0
+								else
+									N_2_1 = 1+math.floor(n_ups/2)
 								end
+								cfg.box.replication_connect_quorum = math.max(
+									cfg.box.replication_connect_quorum or 0,
+									N_2_1
+								)
 							end
 						end
 

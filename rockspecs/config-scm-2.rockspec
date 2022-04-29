@@ -1,7 +1,7 @@
 package = 'config'
 version = 'scm-2'
 source  = {
-    url    = 'git://github.com/moonlibs/config.git',
+    url    = 'git+https://github.com/moonlibs/config.git',
     branch = 'v2',
 }
 description = {

@@ -331,12 +331,14 @@ master_selection_policies = {
 			if cluster_cfg.master == instance_name then
 				log.info("Instance is declared as cluster master, set read_only=false")
 				cfg.box.read_only = false
+				cfg.box.replication_connect_quorum = 1
+				cfg.box.replication_connect_timeout = 1
 			else
 				log.info("Cluster has another master %s, not me %s, set read_only=true", cluster_cfg.master, instance_name)
 				cfg.box.read_only = true
 			end
 		else
-			log.info("Claster have no declared master, set read_only=true")
+			log.info("Cluster have no declared master, set read_only=true")
 			cfg.box.read_only = true
 		end
 
@@ -842,10 +844,9 @@ local M
 								else
 									N_2_1 = 1+math.floor(n_ups/2)
 								end
-								cfg.box.replication_connect_quorum = math.max(
-									cfg.box.replication_connect_quorum or 0,
-									N_2_1
-								)
+								if not cfg.box.replication_connect_quorum then
+									cfg.box.replication_connect_quorum = N_2_1
+								end
 							end
 						end
 

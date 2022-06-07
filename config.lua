@@ -253,7 +253,7 @@ local function value_diff(old,new)
 			return new
 		end
 	end
-	return -- no diff
+	-- no diff
 end
 
 local function toboolean(v)
@@ -271,7 +271,7 @@ end
 
 local master_selection_policies;
 master_selection_policies = {
-	['etcd.instance.single'] = function(_, _, common_cfg, instance_cfg, cluster_cfg, local_cfg)
+	['etcd.instance.single'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 		local cfg = {}
 		deep_merge(cfg, common_cfg)
 		deep_merge(cfg, instance_cfg)
@@ -294,7 +294,7 @@ master_selection_policies = {
 		log.info("Using policy etcd.instance.single, read_only=%s",cfg.box.read_only)
 		return cfg
 	end;
-	['etcd.instance.read_only'] = function(M, _, common_cfg, instance_cfg, cluster_cfg, local_cfg)
+	['etcd.instance.read_only'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 		local cfg = {}
 		deep_merge(cfg, common_cfg)
 		deep_merge(cfg, instance_cfg)
@@ -315,7 +315,7 @@ master_selection_policies = {
 		log.info("Using policy etcd.instance.read_only, read_only=%s",cfg.box.read_only)
 		return cfg
 	end;
-	['etcd.cluster.master'] = function(_, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
+	['etcd.cluster.master'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
 		log.info("Using policy etcd.cluster.master")
 		local cfg = {}
 		deep_merge(cfg, common_cfg)
@@ -367,7 +367,8 @@ master_selection_policies = {
 			cfg.box.election_mode = M.default_election_mode
 		end
 
-		if cfg.box.election_mode == 'off' or cfg.box.election_mode == nil then
+		-- TODO: anonymous replica
+		if cfg.box.election_mode == 'off' then
 			log.info("Force box.read_only=true for election_mode=off")
 			cfg.box.read_only = true
 		end
@@ -464,10 +465,10 @@ local function etcd_load( M, etcd_conf, local_cfg )
 
 	function M.etcd.get_instances(e)
 		local all_instances_cfg = e:list(prefix .. "/instances")
-		for instance_name,inst_cfg in pairs(all_instances_cfg) do
+		for inst_name,inst_cfg in pairs(all_instances_cfg) do
 			cast_types(inst_cfg.box)
 			if etcd_conf.uuid == 'auto' and not inst_cfg.box.instance_uuid then
-				inst_cfg.box.instance_uuid = gen_instance_uuid(instance_name)
+				inst_cfg.box.instance_uuid = gen_instance_uuid(inst_name)
 			end
 		end
 		return all_instances_cfg
@@ -487,10 +488,10 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	function M.etcd.get_all(e)
 		local all_cfg = e:list(prefix)
 		cast_types(all_cfg.common.box)
-		for instance_name,inst_cfg in pairs(all_cfg.instances) do
+		for inst_name,inst_cfg in pairs(all_cfg.instances) do
 			cast_types(inst_cfg.box)
 			if etcd_conf.uuid == 'auto' and not inst_cfg.box.instance_uuid then
-				inst_cfg.box.instance_uuid = gen_instance_uuid(instance_name)
+				inst_cfg.box.instance_uuid = gen_instance_uuid(inst_name)
 			end
 		end
 		for cluster_name,cluster_cfg in pairs(all_cfg.clusters or all_cfg.shards or {}) do
@@ -621,6 +622,17 @@ local function is_replication_changed (old_conf, new_conf)
 	end
 end
 
+local function optimal_rcq(upstreams)
+	local n_ups = #(upstreams or {})
+	local rcq
+	if n_ups == 0 then
+		rcq = 0
+	else
+		rcq = 1+math.floor(n_ups/2)
+	end
+	return rcq
+end
+
 local M
 	M = setmetatable({
 		console = {};
@@ -642,7 +654,7 @@ local M
 			end
 		end
 	},{
-		__call = function(M, args)
+		__call = function(_, args)
 			-- args MUST belong to us, because of modification
 			local file
 			if type(args) == 'string' then
@@ -660,6 +672,7 @@ local M
 			if args.tidy_load == nil then
 				args.tidy_load = true
 			end
+			M.default_replication_connect_timeout = args.default_replication_connect_timeout or 1.1
 			M.default_election_mode = args.default_election_mode or 'candidate'
 			M.default_synchro_quorum = args.default_synchro_quorum or 'N/2+1'
 			M.default_read_only = args.default_read_only or false
@@ -829,24 +842,25 @@ local M
 								print("Have etcd, use tidy load")
 								local ro = cfg.box.read_only
 								cfg.box.read_only = true
-								cfg.box.replication_connect_quorum = 1
-								cfg.box.replication_connect_timeout = 1
-								log.info("Start tidy loading with ro=true%s (snap=%s)",
+								if not ro then
+									-- Only if node should be master
+									cfg.box.replication_connect_quorum = 1
+									cfg.box.replication_connect_timeout = M.default_replication_connect_timeout
+								elseif not cfg.box.replication_connect_quorum then
+									-- For replica tune up to N/2+1
+									cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
+								end
+								log.info("Start tidy loading with ro=true%s rcq=%s rct=%s (snap=%s)",
 									ro ~= true and string.format(' (would be %s)',ro) or '',
+									cfg.box.replication_connect_quorum, cfg.box.replication_connect_timeout,
 									bootstrapped
 								)
 							else
-								log.info("Start non-bootstrapped tidy loading with ro=%s (dir=%s)",cfg.box.read_only, snap_dir)
-								local N_2_1
-								local n_ups = #(cfg.box.replication or {})
-								if n_ups == 0 then
-									N_2_1 = 0
-								else
-									N_2_1 = 1+math.floor(n_ups/2)
-								end
 								if not cfg.box.replication_connect_quorum then
-									cfg.box.replication_connect_quorum = N_2_1
+									cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
 								end
+								log.info("Start non-bootstrapped tidy loading with ro=%s rcq=%s rct=%s (dir=%s)",
+									cfg.box.read_only, snap_dir, cfg.box.replication_connect_quorum, cfg.box.replication_connect_timeout)
 							end
 						end
 

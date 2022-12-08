@@ -1,0 +1,26 @@
+---
+instance:
+  clusters:
+    instance:
+      master: instance_01
+      replicaset_uuid: 91157a11-0001-0000-0000-000000000000
+  common:
+    etcd:
+      fencing_timeout: 5
+      fencing_pause: 3
+    box:
+      replication_connect_quorum: 1
+      log_level: 5
+      memtx_memory: 268435456
+  instances:
+    instance_01:
+      cluster: instance
+      box:
+        instance_uuid: 91157a11-0000-0001-0000-000000000000
+        listen: instance_01:3301
+    instance_02:
+      cluster: instance
+      box:
+        instance_uuid: 91157a11-0000-0002-0000-000000000000
+        listen: instance_02:3302
+...

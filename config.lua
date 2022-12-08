@@ -3,6 +3,7 @@ local fio = require 'fio'
 local json = require 'json'
 local yaml = require 'yaml'
 local digest = require 'digest'
+local fiber  = require 'fiber'
 json.cfg{ encode_invalid_as_nil = true }
 
 local function lookaround(fun)
@@ -921,6 +922,202 @@ local M
 				args.on_after_cfg(M,cfg)
 			end
 			-- print(string.format("Box configured"))
+
+			local msp = config.get('sys.master_selection_policy')
+			if type(cfg.etcd) == 'table'
+				and config.get('etcd.fencing_enabled')
+				and msp == 'etcd.cluster.master'
+				and type(cfg.cluster) == 'string' and cfg.cluster ~= ''
+			then
+				M._fencing_f = fiber.create(function()
+					fiber.name('config/fencing')
+					fiber.yield() -- yield execution
+					local function in_my_gen() fiber.testcancel() return config._fencing_f == fiber.self() end
+					assert(cfg.cluster, "cfg.cluster must be defined")
+
+					local watch_path = fio.pathjoin(
+						config.get('etcd.prefix'),
+						'clusters',
+						cfg.cluster
+					)
+
+					local my_name = assert(config.get('sys.instance_name'), "instance_name is not defined")
+					local fencing_timeout = config.get('etcd.fencing_timeout', 10)
+					local fencing_pause = config.get('etcd.fencing_pause', fencing_timeout/2)
+					local fencing_check_replication = config.get('etcd.fencing_check_replication')
+					if type(fencing_check_replication) == 'string' then
+						fencing_check_replication = fencing_check_replication == 'true'
+					else
+						fencing_check_replication = fencing_check_replication == true
+					end
+
+					local etcd_cluster, watch_index
+
+					local function refresh_list()
+						local result, resp = config.etcd:list(watch_path)
+						if resp.status == 200 then
+							etcd_cluster = result
+							if type(resp.headers) == 'table'
+								and tonumber(resp.headers['x-etcd-index'])
+								and tonumber(resp.headers['x-etcd-index']) > (tonumber(watch_index) or 0)
+							then
+								watch_index = tonumber(resp.headers['x-etcd-index'])
+							end
+						end
+						return etcd_cluster, watch_index
+					end
+
+					local function fencing_check(deadline)
+						local timeout = math.min(deadline-fiber.time(), fencing_timeout)
+						local check_started = fiber.time()
+						local pcall_ok, err_or_resolution, new_cluster = pcall(function()
+							local not_timed_out, response = config.etcd:wait(watch_path, {
+								index = watch_index,
+								timeout = timeout,
+							})
+
+							-- http timed out / our network drop - we'll never know
+							if not not_timed_out then return 'timeout' end
+							local res = json.decode(response.body)
+
+							if type(response.headers) == 'table'
+								and tonumber(response.headers['x-etcd-index'])
+								and tonumber(response.headers['x-etcd-index']) > watch_index
+							then
+								watch_index = tonumber(response.headers['x-etcd-index'])
+							end
+
+							if res.node then
+								return 'changed', config.etcd:recursive_extract(watch_path, res.node)
+							end
+						end)
+
+						if not pcall_ok then
+							log.warn("ETCD watch failed: %s", err_or_resolution)
+						end
+
+						if err_or_resolution ~= 'changed' then
+							new_cluster = nil
+						end
+
+						if not new_cluster then
+							deadline = deadline+fencing_timeout
+							while fiber.time() < deadline and in_my_gen() do
+								local ok, e_cluster = pcall(refresh_list)
+								if ok and e_cluster then
+									new_cluster = e_cluster
+									break
+								end
+								if not in_my_gen() then return end
+								fiber.sleep(fencing_pause / 10)
+							end
+						end
+
+						if not in_my_gen() then return end
+
+						if type(new_cluster) ~= 'table' then -- ETCD is down
+							log.warn('[fencing] ETCD %s is not discovered in etcd during %s seconds',
+								watch_path, fiber.time()-check_started)
+
+							if not fencing_check_replication then
+								return false
+							end
+
+							-- In proper fencing we must step down immediately as soon as we discover
+							-- that coordinator is down. But in real world there are some circumstances
+							-- when coordinator can be down for several seconds if someone crashes network
+							-- or ETCD itself.
+							-- We propose that it is safe to not step down as soon as we are connected to all
+							-- replicas in replicaset (etcd.cluster.master is fullmesh topology).
+							-- We do not check downstreams here, because downstreams cannot lead to collisions.
+							-- It at least 1 upstream is not in status follow
+							-- (Tarantool replication checks with tcp-healthchecks once in box.cfg.replication_timeout)
+							-- We immediately stepdown.
+							for _, ru in pairs(box.info.replication) do
+								if ru.id ~= box.info.id and ru.upstream then
+									if ru.upstream.status ~= "follow" then
+										log.warn("[fencing] upstream %s is not followed by me %s:%s (idle: %s, lag:%s)",
+											ru.upstream.peer, ru.upstream.status, ru.upstream.message,
+											ru.upstream.idle, ru.upstream.lag
+										)
+										return false
+									end
+								end
+							end
+
+							log.warn('[fencing] ETCD is down but all upstreams are followed by me. Continuing leadership')
+							return true
+						elseif new_cluster.master == my_name then
+							-- The most commmon branch. We are registered as the leader.
+							return true
+						elseif new_cluster.switchover then -- new_cluster.master ~= my_name
+							-- Another instance is the leader in ETCD. But we could be the one
+							-- who will be the next (cluster is under switching right now).
+							-- It is almost impossible to get this path in production. But the only one
+							-- protection we have is `fencing_pause` and `fencing_timeout`.
+							-- So, we will do nothing until ETCD mutex is present
+							log.warn('[fencing] It seems that cluster is under switchover right now %s', json.encode(new_cluster))
+							-- (if we are ro -- then we must end the loop)
+							-- (if we are rw -- then we must continue the loop)
+							return not box.info.ro
+						else
+							log.warn('[fencing] ETCD %s/master is %s not us. Stepping down', watch_path, new_cluster.master)
+							return false
+						end
+					end
+
+					if not pcall(refresh_list) then
+						log.warn("etcd list failed")
+					end
+					log.info("etcd_master is %s (index: %s)", json.encode(etcd_cluster), watch_index)
+
+					-- Main fencing loop
+					-- It is executed on every replica in the shard
+					-- if instance is ro then it will wait until instance became rw
+					while in_my_gen() do
+						-- Wait until instance became rw loop
+						while box.info.ro and in_my_gen() do
+							-- this is just fancy sleep.
+							-- if node became rw in less than 3 seconds we will check it immediately
+							pcall(box.ctl.wait_rw, 3)
+						end
+
+						-- after waiting to be rw we will step into fencing-loop
+						-- we must check that we are still in our code generation
+						-- to proceed
+						if not in_my_gen() then return end
+
+						-- we will not step down until deadline.
+						local deadline = fiber.time()+fencing_timeout
+						repeat
+							-- Before ETCD check we better pause
+							-- we do a little bit randomized sleep to not spam ETCD
+							fiber.sleep(math.random(math.max(0.5, fencing_pause-0.5), fencing_pause+0.5))
+							-- After each yield we have to check that we are still in our generation
+							if not in_my_gen() then return end
+
+							-- some one makes us readonly. There no need to check ETCD
+							-- we break from this loop immediately
+							if box.info.ro then break end
+
+							-- fencing_check(deadline) if it returns true,
+							-- then we update leadership leasing
+							if fencing_check(deadline) then
+								-- update deadline.
+								deadline = fiber.time()+fencing_timeout
+							end
+
+							if not in_my_gen() then return end
+						until box.info.ro or fiber.time() > deadline
+
+						-- We have left deadline-loop. It means that fencing is required
+						if not box.info.ro then
+							log.warn('[fencing] Performing self fencing (box.cfg{read_only=true})')
+							box.cfg{read_only=true}
+						end
+					end
+				end)
+			end
 
 			return M
 		end

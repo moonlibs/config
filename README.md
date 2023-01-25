@@ -10,12 +10,12 @@ Only ETCD APIv2 now supported.
 
 Ready for production use.
 
-Latest stable release: `config 0.6.0`.
+Latest stable release: `config 0.6.1`.
 
 ## Installation
 
 ```bash
-tarantoolctl rocks --server=https://moonlibs.org install config 0.6.0
+tarantoolctl rocks --server=https://moonlibs.org install config 0.6.1
 ```
 
 Starting with Tarantool 2.10.0 you may add configuration of moonlibs.org into `config-5.1.lua`

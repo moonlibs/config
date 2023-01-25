@@ -217,6 +217,15 @@ tarantool:
 
 Auto fencing is implemented via background fiber which waits for changes on `<prefix>/clusters/<my-shard-name>` directory.
 
+`fencing_pause` must be less than `fencing_timeout`. The `fencing_timeout - fencing_pause` time slot is used to retry ETCD (at least 2 attempts with sleeps in between) to ensure that ETCD is really down.
+
+You may increase `fencing_pause` if you see that too many requests is made to ETCD.
+If `fencing_timeout - fencing_pause` is too small (less than `etcd/timeout`) then you may face False-Positive fencing when ETCD was slightly down.
+
+Increasing `fencing_timeout` will decrease possibility of False Positive fencing.
+
+You leader will be RW at least `fencing_timeout` if everyone else is down.
+
 There are 4 parameters to configure:
 
 | Parameter                        | Description                           | Default Value       |
@@ -254,8 +263,8 @@ Fencing can be enabled only for topology `etcd.cluster.master` and only if `etcd
 Fencing algorithm is the following:
 
 0. Wait until instance became `rw`.
-1. Wait randomized `fencing_pause` (fencing_pause ± 500ms).
-2. Recheck ETCD `<prefix>/clusters/<my-shard-name>` in `fencing_timeout`.
+1. Wait randomized `(fencing_timeout - fencing_pause) / 10`.
+2. Recheck ETCD `<prefix>/clusters/<my-shard-name>` in `fencing_pause`.
 3. Depends on response:
     1. [ETCD is ok] => provision self to be `rw` for next `fencing_timeout` seconds. Go to `1.`
     2. [ETCD is down] => execute `box.cfg{read_only=true}` if `etcd/fencing_check_replication` is disabled. Go to `0.`

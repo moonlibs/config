@@ -944,6 +944,7 @@ local M
 					local my_name = assert(config.get('sys.instance_name'), "instance_name is not defined")
 					local fencing_timeout = config.get('etcd.fencing_timeout', 10)
 					local fencing_pause = config.get('etcd.fencing_pause', fencing_timeout/2)
+					assert(fencing_pause < fencing_timeout, "fencing_pause must be < fencing_timeout")
 					local fencing_check_replication = config.get('etcd.fencing_check_replication')
 					if type(fencing_check_replication) == 'string' then
 						fencing_check_replication = fencing_check_replication == 'true'
@@ -954,43 +955,59 @@ local M
 					local etcd_cluster, watch_index
 
 					local function refresh_list()
+						local s = fiber.time()
 						local result, resp = config.etcd:list(watch_path)
+						local elapsed = fiber.time()-s
+
+						log.verbose("[fencing] list(%s) => %s in %.3fs %s",
+							watch_path, resp.status, elapsed, json.encode(resp.body))
+
 						if resp.status == 200 then
 							etcd_cluster = result
 							if type(resp.headers) == 'table'
 								and tonumber(resp.headers['x-etcd-index'])
-								and tonumber(resp.headers['x-etcd-index']) > (tonumber(watch_index) or 0)
+								and tonumber(resp.headers['x-etcd-index']) >= (tonumber(watch_index) or 0)
 							then
-								watch_index = tonumber(resp.headers['x-etcd-index'])
+								watch_index = (tonumber(resp.headers['x-etcd-index']) or -1) + 1
 							end
 						end
 						return etcd_cluster, watch_index
 					end
 
 					local function fencing_check(deadline)
-						local timeout = math.min(deadline-fiber.time(), fencing_timeout)
+						local timeout = math.min((deadline-fiber.time()), fencing_pause)
 						local check_started = fiber.time()
 						local pcall_ok, err_or_resolution, new_cluster = pcall(function()
 							local not_timed_out, response = config.etcd:wait(watch_path, {
 								index = watch_index,
 								timeout = timeout,
 							})
+							log.verbose("[fencing] wait(%s,index=%s,timeout=%.3fs) => %s (ind:%s) %s",
+								watch_path, watch_index, timeout,
+								response.status, response.headers['x-etcd-index'],
+								json.encode(response.body))
 
-							-- http timed out / our network drop - we'll never know
+							-- http timed out / or network drop - we'll never know
 							if not not_timed_out then return 'timeout' end
 							local res = json.decode(response.body)
 
 							if type(response.headers) == 'table'
 								and tonumber(response.headers['x-etcd-index'])
-								and tonumber(response.headers['x-etcd-index']) > watch_index
+								and tonumber(response.headers['x-etcd-index']) >= watch_index
 							then
-								watch_index = tonumber(response.headers['x-etcd-index'])
+								watch_index = (tonumber(response.headers['x-etcd-index']) or -1) + 1
 							end
 
 							if res.node then
-								return 'changed', config.etcd:recursive_extract(watch_path, res.node)
+								local node = {}
+								config.etcd:recursive_extract(watch_path, res.node, node)
+								log.verbose("[fencing] watch index changed: %s =>  %s", watch_path, json.encode(node))
+								if not node.master then node = nil end
+								return 'changed', node
 							end
 						end)
+
+						if not in_my_gen() then return end
 
 						if not pcall_ok then
 							log.warn("ETCD watch failed: %s", err_or_resolution)
@@ -1001,23 +1018,24 @@ local M
 						end
 
 						if not new_cluster then
-							deadline = deadline+fencing_timeout
-							while fiber.time() < deadline and in_my_gen() do
+							local sleep = math.max(fencing_pause / 2, (deadline - fiber.time()) / 2)
+							repeat
 								local ok, e_cluster = pcall(refresh_list)
 								if ok and e_cluster then
 									new_cluster = e_cluster
 									break
 								end
+
 								if not in_my_gen() then return end
-								fiber.sleep(fencing_pause / 10)
-							end
+								fiber.sleep(sleep)
+							until fiber.time() > deadline
 						end
 
 						if not in_my_gen() then return end
 
 						if type(new_cluster) ~= 'table' then -- ETCD is down
-							log.warn('[fencing] ETCD %s is not discovered in etcd during %s seconds',
-								watch_path, fiber.time()-check_started)
+							log.warn('[fencing] ETCD %s is not discovered in etcd during %.2fs %s',
+								watch_path, fiber.time()-check_started, new_cluster)
 
 							if not fencing_check_replication then
 								return false
@@ -1030,7 +1048,7 @@ local M
 							-- We propose that it is safe to not step down as soon as we are connected to all
 							-- replicas in replicaset (etcd.cluster.master is fullmesh topology).
 							-- We do not check downstreams here, because downstreams cannot lead to collisions.
-							-- It at least 1 upstream is not in status follow
+							-- If at least 1 upstream is not in status follow
 							-- (Tarantool replication checks with tcp-healthchecks once in box.cfg.replication_timeout)
 							-- We immediately stepdown.
 							for _, ru in pairs(box.info.replication) do
@@ -1066,11 +1084,6 @@ local M
 						end
 					end
 
-					if not pcall(refresh_list) then
-						log.warn("etcd list failed")
-					end
-					log.info("etcd_master is %s (index: %s)", json.encode(etcd_cluster), watch_index)
-
 					-- Main fencing loop
 					-- It is executed on every replica in the shard
 					-- if instance is ro then it will wait until instance became rw
@@ -1087,12 +1100,33 @@ local M
 						-- to proceed
 						if not in_my_gen() then return end
 
+						--- Initial Load of etcd_cluster and watch_index
+						local attempt = 0
+						while in_my_gen() do
+							local ok, err = pcall(refresh_list)
+							if not in_my_gen() then return end
+
+							if ok then break end
+							attempt = attempt + 1
+							log.warn("[fencing] initial list failed: %s (attempts: %s)", err, attempt)
+
+							fiber.sleep(math.random(math.max(0.5, fencing_pause-0.5), fencing_pause+0.5))
+						end
+
+						log.info("etcd_cluster is %s (index: %s)", json.encode(etcd_cluster), watch_index)
+						if not in_my_gen() then return end
+
+						-- we yield to get next ev_run before get fiber.time()
+						fiber.sleep(0)
+
 						-- we will not step down until deadline.
 						local deadline = fiber.time()+fencing_timeout
 						repeat
 							-- Before ETCD check we better pause
 							-- we do a little bit randomized sleep to not spam ETCD
-							fiber.sleep(math.random(math.max(0.5, fencing_pause-0.5), fencing_pause+0.5))
+							fiber.sleep(
+								math.random(0, (fencing_timeout - fencing_pause) / 10)
+							)
 							-- After each yield we have to check that we are still in our generation
 							if not in_my_gen() then return end
 
@@ -1104,6 +1138,11 @@ local M
 							-- then we update leadership leasing
 							if fencing_check(deadline) then
 								-- update deadline.
+								log.verbose("[fencing] Leasing ft:%.3fs up:%.3fs left:%.3fs",
+									fencing_timeout,
+									fiber.time()+fencing_timeout-deadline,
+									deadline - fiber.time()
+								)
 								deadline = fiber.time()+fencing_timeout
 							end
 

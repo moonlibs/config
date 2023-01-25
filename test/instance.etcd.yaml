@@ -6,8 +6,8 @@ instance:
       replicaset_uuid: 91157a11-0001-0000-0000-000000000000
   common:
     etcd:
-      fencing_timeout: 5
-      fencing_pause: 3
+      fencing_timeout: 10
+      fencing_pause: 7
     box:
       replication_connect_quorum: 1
       log_level: 5

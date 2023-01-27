@@ -928,6 +928,7 @@ local M
 				and config.get('etcd.fencing_enabled')
 				and msp == 'etcd.cluster.master'
 				and type(cfg.cluster) == 'string' and cfg.cluster ~= ''
+				and config.get('etcd.reduce_listing_quorum') ~= true
 			then
 				M._fencing_f = fiber.create(function()
 					fiber.name('config/fencing')

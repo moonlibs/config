@@ -37,6 +37,9 @@ function M.new(mod,options)
 	self.boolean_auto = options.boolean_auto
 	self.print_config = options.print_config
 	self.discover_endpoints = options.discover_endpoints == nil and true or options.discover_endpoints
+	if options.reduce_listing_quorum == true then
+		self.reduce_listing_quorum = true
+	end
 	if options.login then
 		self.authorization = "Basic "..digest.base64_encode(options.login..":"..(options.password or ""))
 		self.headers = { authorization = self.authorization }
@@ -179,7 +182,7 @@ function M:recursive_extract(cut, node, storage)
 end
 
 function M:list(keyspath)
-	local res, response = self:request("GET","keys"..keyspath, { recursive = true, quorum = true })
+	local res, response = self:request("GET","keys"..keyspath, { recursive = true, quorum = not self.reduce_listing_quorum })
 	-- print(yaml.encode(res))
 	if res.node then
 		local result = self:recursive_extract(keyspath,res.node)

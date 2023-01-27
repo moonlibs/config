@@ -6,6 +6,32 @@ It can be used with or without ETCD.
 
 Only ETCD APIv2 now supported.
 
+- [Config](#config)
+  - [Status](#status)
+  - [Installation](#installation)
+  - [Configuration](#configuration)
+    - [Example of `conf.lua`](#example-of-conflua)
+    - [Usage in `init.lua`](#usage-in-initlua)
+  - [Usage](#usage)
+  - [Topologies](#topologies)
+    - [Single-shard topology](#single-shard-topology)
+      - [Example of `init.lua`](#example-of-initlua)
+      - [Example of `/etc/userdb/conf.lua`](#example-of-etcuserdbconflua)
+      - [Example of ETCD configuration (`etcd.cluster.master`)](#example-of-etcd-configuration-etcdclustermaster)
+        - [Configuration precedence](#configuration-precedence)
+      - [Fencing configuration](#fencing-configuration)
+      - [Fencing algorithm](#fencing-algorithm)
+    - [Operations during disaster](#operations-during-disaster)
+    - [Multi-proxy topology (etcd.instance.single)](#multi-proxy-topology-etcdinstancesingle)
+      - [Example of proxy `init.lua`](#example-of-proxy-initlua)
+      - [Example of `/etc/proxy/conf.lua`](#example-of-etcproxyconflua)
+      - [Example of ETCD configuration (`etcd.instance.single`)](#example-of-etcd-configuration-etcdinstancesingle)
+    - [Multi-shard topology for custom sharding (`etcd.cluster.master`)](#multi-shard-topology-for-custom-sharding-etcdclustermaster)
+    - [Multi-shard topology for vshard-based applications (`etcd.cluster.vshard`)](#multi-shard-topology-for-vshard-based-applications-etcdclustervshard)
+      - [Example of ETCD configuration for vshard-based applications (`etcd.cluster.vshard`)](#example-of-etcd-configuration-for-vshard-based-applications-etcdclustervshard)
+      - [Example of vshard-based init.lua (`etcd.cluster.vshard`)](#example-of-vshard-based-initlua-etcdclustervshard)
+      - [VShard Maintenance](#vshard-maintenance)
+
 ## Status
 
 Ready for production use.
@@ -272,6 +298,28 @@ Fencing algorithm is the following:
     4. [ETCD has another master, and switching is not in progress] => execute `box.cfg{read_only=true}`. Go to `0.`
 
 **Note:** to request ETCD Quorum Reads are used. So it is safe to use it in split brain.
+
+### Operations during disaster
+
+When ETCD failed to determine leader cluster can't reload it's configuration (or restart).
+
+During disaster, you must recovery ETCD elections mechanism first.
+
+If it is not possible, and you need to reload configuration or restart instance you may switch to manual configuration mode.
+
+To do that set `reduce_listing_quorum` to `true` in `conf.lua` config.
+
+After ETCD becames operation you **must** remove this option from local configuration.
+
+```lua
+etcd = {
+  reduce_listing_quorum = true,
+}
+```
+
+Enabling this option automatically disables `fencing`.
+
+Be extra careful to not allow Tarantool Master-Master setup. (Since ETCD may have different configuration on it's replicas).
 
 ### Multi-proxy topology (etcd.instance.single)
 

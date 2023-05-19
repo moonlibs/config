@@ -1,10 +1,11 @@
 local log = require 'log'
 local fio = require 'fio'
-local json = require 'json'
-local yaml = require 'yaml'
+local json = require 'json'.new()
+local yaml = require 'yaml'.new()
 local digest = require 'digest'
 local fiber  = require 'fiber'
 json.cfg{ encode_invalid_as_nil = true }
+yaml.cfg{ encode_use_tostring = true }
 
 local function lookaround(fun)
 	local vars = {}
@@ -20,9 +21,9 @@ local function lookaround(fun)
 	return vars, i - 1
 end
 
-local function peek_vars()
+local function reflect_internals()
 	local peek = {
-		dynamic_cfg   = true;
+		dynamic_cfg   = {};
 		upgrade_cfg   = true;
 		translate_cfg = true;
 		template_cfg  = true;
@@ -31,7 +32,7 @@ local function peek_vars()
 
 	local steps = {}
 	local peekf = box.cfg
-	local allow_ctl_unwrap = true
+	local allow_unwrap = true
 	while true do
 		local prevf = peekf
 		local mt = debug.getmetatable(peekf)
@@ -46,34 +47,60 @@ local function peek_vars()
 		end
 
 		local vars, _ = lookaround(peekf)
-		if allow_ctl_unwrap and vars.orig_cfg then
-			-- It's a wrap of tarantoolctl, unwrap and repeat
-			peekf = vars.orig_cfg
-			allow_ctl_unwrap = false
+		if allow_unwrap and (vars.orig_cfg or vars.origin_cfg) then
+			-- It's a wrap of tarantoolctl/tt, unwrap and repeat
+			peekf = (vars.orig_cfg or vars.origin_cfg)
+			allow_unwrap = false
 			table.insert(steps,"ctl-orig")
-		elseif not vars.dynamic_cfg and vars.lock and vars.f and type(vars.f) == 'function' then
-			peekf = vars.f
-			table.insert(steps,"lock-unwrap")
-		elseif not vars.dynamic_cfg and vars.old_call and type(vars.old_call) == 'function' then
-			peekf = vars.old_call
-			table.insert(steps,"ctl-oldcall")
-		elseif not vars.dynamic_cfg and vars.orig_cfg_call and type(vars.orig_cfg_call) == 'function' then
-			peekf = vars.orig_cfg_call
-			table.insert(steps,"ctl-orig_cfg_call")
 		elseif vars.dynamic_cfg then
 			log.info("Found config by steps: %s", table.concat(steps, ", "))
+			for k in pairs(vars.dynamic_cfg) do
+				peek.dynamic_cfg[k] = true
+			end
 			for k in pairs(peek) do
-				if vars[k] ~= nil then
-					peek[k] = vars[k]
-				else
-					peek[k] = nil
+				if peek[k] == true then
+					if vars[k] ~= nil then
+						peek[k] = vars[k]
+					else
+						peek[k] = nil
+					end
 				end
 			end
 			break
+		elseif vars.lock and vars.f and type(vars.f) == 'function' then
+			peekf = vars.f
+			table.insert(steps,"lock-unwrap")
+		elseif vars.old_call and type(vars.old_call) == 'function' then
+			peekf = vars.old_call
+			table.insert(steps,"ctl-oldcall")
+		elseif vars.orig_cfg_call and type(vars.orig_cfg_call) == 'function' then
+			peekf = vars.orig_cfg_call
+			table.insert(steps,"ctl-orig_cfg_call")
+		elseif vars.load_cfg_apply_dynamic then
+			table.insert(steps,"load_cfg_apply_dynamic")
+			for k in pairs(peek) do
+				if peek[k] == true then
+					if vars[k] ~= nil then
+						peek[k] = vars[k]
+					end
+				end
+			end
+			peekf = vars.load_cfg_apply_dynamic
+		elseif vars.dynamic_cfg_modules then
+			-- print(yaml.encode(vars.dynamic_cfg_modules))
+			log.info("Found config by steps: %s", table.concat(steps, ", "))
+			for k, v in pairs(vars.dynamic_cfg_modules) do
+				peek.dynamic_cfg[k] = true
+				for op in pairs(v.options) do
+					peek.dynamic_cfg[op] = true
+				end
+			end
+			break;
 		else
 			for k,v in pairs(vars) do log.info("var %s=%s",k,v) end
 			error(string.format("Bad vars for %s after steps: %s", peekf, table.concat(steps, ", ")))
 		end
+
 		if prevf == peekf then
 			error(string.format("Recursion for %s after steps: %s", peekf, table.concat(steps, ", ")))
 		end
@@ -81,19 +108,19 @@ local function peek_vars()
 	return peek
 end
 
-local peek = peek_vars()
+local load_cfg = reflect_internals()
 
 -- TODO: suppress deprecation
 local function prepare_box_cfg(cfg)
 	-- 1. take config, if have upgrade, upgrade it
-	if peek.upgrade_cfg then
-		cfg = peek.upgrade_cfg(cfg, peek.translate_cfg)
+	if load_cfg.upgrade_cfg then
+		cfg = load_cfg.upgrade_cfg(cfg, load_cfg.translate_cfg)
 	end
 
 	-- 2. check non-dynamic, and wipe them out
 	if type(box.cfg) ~= 'function' then
 		for key, val in pairs(cfg) do
-			if peek.dynamic_cfg[key] == nil and box.cfg[key] ~= val then
+			if load_cfg.dynamic_cfg[key] == nil and box.cfg[key] ~= val then
 				local warn = string.format(
 					"Can't change option '%s' dynamically from '%s' to '%s'",
 					key,box.cfg[key],val
@@ -391,7 +418,7 @@ master_selection_policies = {
 local function cast_types(c)
 	if c then
 		for k,v in pairs(c) do
-			if peek.template_cfg[k] == 'boolean' and type(v) == 'string' then
+			if load_cfg.template_cfg[k] == 'boolean' and type(v) == 'string' then
 				c[k] = c[k] == 'true'
 			end
 		end
@@ -878,7 +905,7 @@ local M
 						-- therefore, they would be absent, but should not be passed. remove them
 						if diff_box then
 							for key in pairs(diff_box) do
-								if peek.dynamic_cfg[key] == nil then
+								if load_cfg.dynamic_cfg[key] == nil then
 									diff_box[key] = nil
 								end
 							end

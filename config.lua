@@ -1006,14 +1006,26 @@ local M
 						local timeout = math.min((deadline-fiber.time()), fencing_pause)
 						local check_started = fiber.time()
 						local pcall_ok, err_or_resolution, new_cluster = pcall(function()
+							local started = fiber.time()
+							local n_endpoints = #config.etcd.endpoints
 							local not_timed_out, response = config.etcd:wait(watch_path, {
 								index = watch_index,
-								timeout = timeout,
+								timeout = timeout/n_endpoints,
 							})
-							log.verbose("[fencing] wait(%s,index=%s,timeout=%.3fs) => %s (ind:%s) %s",
+							local logger
+							if not_timed_out then
+								if tonumber(response.status) and tonumber(response.status) >= 400 then
+									logger = log.error
+								else
+									logger = log.info
+								end
+							else
+								logger = log.verbose
+							end
+							logger("[fencing] wait(%s,index=%s,timeout=%.3fs) => %s (ind:%s) %s took %.3fs",
 								watch_path, watch_index, timeout,
-								response.status, response.headers['x-etcd-index'],
-								json.encode(response.body))
+								response.status, (response.headers or {})['x-etcd-index'],
+								json.encode(response.body), fiber.time()-started)
 
 							-- http timed out / or network drop - we'll never know
 							if not not_timed_out then return 'timeout' end
@@ -1029,7 +1041,7 @@ local M
 							if res.node then
 								local node = {}
 								config.etcd:recursive_extract(watch_path, res.node, node)
-								log.verbose("[fencing] watch index changed: %s =>  %s", watch_path, json.encode(node))
+								log.info("[fencing] watch index changed: %s =>  %s", watch_path, json.encode(node))
 								if not node.master then node = nil end
 								return 'changed', node
 							end

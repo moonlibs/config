@@ -1,19 +1,17 @@
 version: "3"
 
+x-env: &env
+  ETCDCTL_API: 2
+  ETCD_ENABLE_V2: true
+  ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+  ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+  ETCD_INITIAL_CLUSTER_TOKEN: etcd-cluster
+  ETCD_INITIAL_CLUSTER: etcd0=http://etcd0:2380,etcd1=http://etcd1:2380,etcd2=http://etcd2:2380
+
 x-etcd: &etcd
-  image: quay.io/coreos/etcd:v2.3.8
-  container_name: etcd
+  image: quay.io/coreos/etcd:v3.3.11
   networks:
     - tarantool
-  environment:
-    ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
-    ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-    ETCDCTL_API: 2
-    ETCD_INITIAL_CLUSTER_TOKEN: etcd-cluster
-    ETCD_INITIAL_CLUSTER: etcd=http://etcd:2380
-    ETCD_NAME: etcd
-    ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
-    ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd:2380
 
 x-tt: &tt
   build: .
@@ -22,7 +20,11 @@ x-tt: &tt
     - $PWD/app:/opt/tarantool
     - $PWD/net:/opt/tarantool/net:ro
   depends_on:
-    etcd:
+    etcd0:
+      condition: service_started
+    etcd1:
+      condition: service_started
+    etcd2:
       condition: service_started
   privileged: true
   networks:
@@ -35,8 +37,31 @@ networks:
     driver: bridge
 
 services:
-  etcd:
+  etcd0:
     <<: *etcd
+    container_name: etcd0
+    environment:
+      <<: *env
+      ETCD_NAME: etcd0
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd0:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd0:2380
+  etcd1:
+    <<: *etcd
+    container_name: etcd1
+    environment:
+      <<: *env
+      ETCD_NAME: etcd1
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd1:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd1:2380
+  etcd2:
+    <<: *etcd
+    container_name: etcd2
+    environment:
+      <<: *env
+      ETCD_NAME: etcd2
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd2:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd2:2380
+
   etcd_load:
     image: registry.gitlab.com/ochaton/switchover:010a6965
     networks:
@@ -44,10 +69,14 @@ services:
     volumes:
       - $PWD/instance.etcd.yaml:/instance.etcd.yaml:ro
     depends_on:
-      etcd:
+      etcd0:
+        condition: service_started
+      etcd1:
+        condition: service_started
+      etcd2:
         condition: service_started
     entrypoint: ['']
-    command: ["/bin/sh", "-c", "sleep 3 && switchover -v -e http://etcd:2379 etcd load / /instance.etcd.yaml"]
+    command: ["/bin/sh", "-c", "sleep 3 && switchover -v -e http://etcd0:2379,http://etcd1:2379,http://etcd2:2379 etcd load / /instance.etcd.yaml"]
   instance_01:
     <<: *tt
     container_name: instance_01

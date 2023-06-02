@@ -888,7 +888,7 @@ local M
 									cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
 								end
 								log.info("Start non-bootstrapped tidy loading with ro=%s rcq=%s rct=%s (dir=%s)",
-									cfg.box.read_only, snap_dir, cfg.box.replication_connect_quorum, cfg.box.replication_connect_timeout)
+									cfg.box.read_only, cfg.box.replication_connect_quorum, cfg.box.replication_connect_timeout, snap_dir)
 							end
 						end
 

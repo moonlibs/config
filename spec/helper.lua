@@ -113,5 +113,25 @@ function h.start_tarantool(opts)
 	return srv
 end
 
+---comment
+---@param conn luatest.server
+function h.restart_tarantool(conn)
+	conn:stop()
+	local deadline = clock.time() + 15
+
+	fiber.sleep(3)
+	conn:start()
+
+	while clock.time() < deadline do
+		fiber.sleep(3)
+		assert(conn.process:is_alive(), "tarantool is dead")
+
+		if pcall(function() conn:connect_net_box() end) then
+			break
+		end
+
+	end
+end
+
 
 return h

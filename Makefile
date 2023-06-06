@@ -11,6 +11,7 @@ test: build-testing-image run-compose
 		--net tt_net \
 		-e TT_ETCD_ENDPOINTS="http://etcd0:2379,http://etcd1:2379,http://etcd2:2379" \
 		--rm -v $$(pwd):/source/config \
+		-v $$(pwd)/data:/tmp/ \
 		--workdir /source/config \
 		--entrypoint '' \
 		config-test \

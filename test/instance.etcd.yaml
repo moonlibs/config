@@ -7,7 +7,7 @@ instance:
   common:
     etcd:
       fencing_timeout: 10
-      fencing_pause: 7
+      fencing_pause: 5
     box:
       replication_connect_quorum: 1
       log_level: 5

@@ -888,7 +888,7 @@ local M
 									cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
 								end
 								log.info("Start non-bootstrapped tidy loading with ro=%s rcq=%s rct=%s (dir=%s)",
-									cfg.box.read_only, snap_dir, cfg.box.replication_connect_quorum, cfg.box.replication_connect_timeout)
+									cfg.box.read_only, cfg.box.replication_connect_quorum, cfg.box.replication_connect_timeout, snap_dir)
 							end
 						end
 
@@ -1003,17 +1003,31 @@ local M
 					end
 
 					local function fencing_check(deadline)
-						local timeout = math.min((deadline-fiber.time()), fencing_pause)
+						-- we can only allow half of the time till deadline
+						local timeout = math.min((deadline-fiber.time())*0.5, fencing_pause)
+
 						local check_started = fiber.time()
 						local pcall_ok, err_or_resolution, new_cluster = pcall(function()
+							local started = fiber.time()
+							local n_endpoints = #config.etcd.endpoints
 							local not_timed_out, response = config.etcd:wait(watch_path, {
 								index = watch_index,
-								timeout = timeout,
+								timeout = timeout/n_endpoints,
 							})
-							log.verbose("[fencing] wait(%s,index=%s,timeout=%.3fs) => %s (ind:%s) %s",
+							local logger
+							if not_timed_out then
+								if tonumber(response.status) and tonumber(response.status) >= 400 then
+									logger = log.error
+								else
+									logger = log.info
+								end
+							else
+								logger = log.verbose
+							end
+							logger("[fencing] wait(%s,index=%s,timeout=%.3fs) => %s (ind:%s) %s took %.3fs",
 								watch_path, watch_index, timeout,
-								response.status, response.headers['x-etcd-index'],
-								json.encode(response.body))
+								response.status, (response.headers or {})['x-etcd-index'],
+								json.encode(response.body), fiber.time()-started)
 
 							-- http timed out / or network drop - we'll never know
 							if not not_timed_out then return 'timeout' end
@@ -1029,7 +1043,7 @@ local M
 							if res.node then
 								local node = {}
 								config.etcd:recursive_extract(watch_path, res.node, node)
-								log.verbose("[fencing] watch index changed: %s =>  %s", watch_path, json.encode(node))
+								log.info("[fencing] watch index changed: %s =>  %s", watch_path, json.encode(node))
 								if not node.master then node = nil end
 								return 'changed', node
 							end
@@ -1046,7 +1060,6 @@ local M
 						end
 
 						if not new_cluster then
-							local sleep = math.max(fencing_pause / 2, (deadline - fiber.time()) / 2)
 							repeat
 								local ok, e_cluster = pcall(refresh_list)
 								if ok and e_cluster then
@@ -1055,6 +1068,8 @@ local M
 								end
 
 								if not in_my_gen() then return end
+								-- we can only sleep 50% till deadline will be reached
+								local sleep = math.min(fencing_pause, 0.5*(deadline - fiber.time()))
 								fiber.sleep(sleep)
 							until fiber.time() > deadline
 						end
@@ -1153,7 +1168,9 @@ local M
 							-- Before ETCD check we better pause
 							-- we do a little bit randomized sleep to not spam ETCD
 							fiber.sleep(
-								math.random(0, (fencing_timeout - fencing_pause) / 10)
+								math.random(0,
+									0.1*math.min(deadline-fiber.time(),fencing_timeout-fencing_pause)
+								)
 							)
 							-- After each yield we have to check that we are still in our generation
 							if not in_my_gen() then return end
@@ -1166,6 +1183,11 @@ local M
 							-- then we update leadership leasing
 							if fencing_check(deadline) then
 								-- update deadline.
+								if deadline <= fiber.time() then
+									log.warn("[fencing] deadline was overflowed deadline:%s, now:%s",
+										deadline, fiber.time()
+									)
+								end
 								log.verbose("[fencing] Leasing ft:%.3fs up:%.3fs left:%.3fs",
 									fencing_timeout,
 									fiber.time()+fencing_timeout-deadline,
@@ -1173,8 +1195,13 @@ local M
 								)
 								deadline = fiber.time()+fencing_timeout
 							end
-
 							if not in_my_gen() then return end
+
+							if deadline <= fiber.time() then
+								log.warn("[fencing] deadline has not been upgraded deadline:%s, now:%s",
+									deadline, fiber.time()
+								)
+							end
 						until box.info.ro or fiber.time() > deadline
 
 						-- We have left deadline-loop. It means that fencing is required

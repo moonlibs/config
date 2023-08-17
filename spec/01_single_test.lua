@@ -77,6 +77,7 @@ function g.test_run_instances(cg)
 		local net_box_port = tonumber(uri.parse(etcd_config.apps.single.instances[name].box.listen).service)
 
 		local tt = h.start_tarantool({
+			alias = name,
 			env = env,
 			command = init_lua,
 			args = {},

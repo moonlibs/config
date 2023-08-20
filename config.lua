@@ -982,9 +982,9 @@ local M
 
 					local etcd_cluster, watch_index
 
-					local function refresh_list()
+					local function refresh_list(opts)
 						local s = fiber.time()
-						local result, resp = config.etcd:list(watch_path)
+						local result, resp = config.etcd:list(watch_path, opts)
 						local elapsed = fiber.time()-s
 
 						log.verbose("[fencing] list(%s) => %s in %.3fs %s",
@@ -1005,6 +1005,7 @@ local M
 					local function fencing_check(deadline)
 						-- we can only allow half of the time till deadline
 						local timeout = math.min((deadline-fiber.time())*0.5, fencing_pause)
+						log.verbose("[wait] timeout:%.3fs FP:%.3fs", timeout, fencing_pause)
 
 						local check_started = fiber.time()
 						local pcall_ok, err_or_resolution, new_cluster = pcall(function()
@@ -1049,6 +1050,7 @@ local M
 							end
 						end)
 
+						log.verbose("[wait] took:%.3fs exp:%.3fs", fiber.time()-check_started, timeout)
 						if not in_my_gen() then return end
 
 						if not pcall_ok then
@@ -1060,8 +1062,10 @@ local M
 						end
 
 						if not new_cluster then
+							local list_started = fiber.time()
+							log.verbose("[listing] left:%.3fs", deadline-fiber.time())
 							repeat
-								local ok, e_cluster = pcall(refresh_list)
+								local ok, e_cluster = pcall(refresh_list, {deadline = deadline})
 								if ok and e_cluster then
 									new_cluster = e_cluster
 									break
@@ -1072,6 +1076,8 @@ local M
 								local sleep = math.min(fencing_pause, 0.5*(deadline - fiber.time()))
 								fiber.sleep(sleep)
 							until fiber.time() > deadline
+							log.verbose("[list] took:%.3fs left:%.3fs",
+								fiber.time()-list_started, deadline-fiber.time())
 						end
 
 						if not in_my_gen() then return end
@@ -1081,7 +1087,8 @@ local M
 								watch_path, fiber.time()-check_started, new_cluster)
 
 							if not fencing_check_replication then
-								return false
+								-- ETCD is down, we do not know what is happening
+								return nil
 							end
 
 							-- In proper fencing we must step down immediately as soon as we discover
@@ -1101,7 +1108,7 @@ local M
 											ru.upstream.peer, ru.upstream.status, ru.upstream.message,
 											ru.upstream.idle, ru.upstream.lag
 										)
-										return false
+										return nil
 									end
 								end
 							end
@@ -1113,16 +1120,19 @@ local M
 							return true
 						elseif new_cluster.switchover then -- new_cluster.master ~= my_name
 							-- Another instance is the leader in ETCD. But we could be the one
-							-- who will be the next (cluster is under switching right now).
+							-- who is going to be the next (cluster is under switching right now).
 							-- It is almost impossible to get this path in production. But the only one
 							-- protection we have is `fencing_pause` and `fencing_timeout`.
 							-- So, we will do nothing until ETCD mutex is present
 							log.warn('[fencing] It seems that cluster is under switchover right now %s', json.encode(new_cluster))
-							-- (if we are ro -- then we must end the loop)
-							-- (if we are rw -- then we must continue the loop)
-							return not box.info.ro
+							-- Note: this node was rw (otherwise we would not execute fencing_check at all)
+							-- During normal switch registered leader is RO (because we are RW, and we are not the leader)
+							-- And in the next step coordinator will update leader info in ETCD.
+							-- so this condition seems to be unreachable for every node
+							return nil
 						else
 							log.warn('[fencing] ETCD %s/master is %s not us. Stepping down', watch_path, new_cluster.master)
+							-- ETCD is up, master is not us => we must step down immediately
 							return false
 						end
 					end
@@ -1156,22 +1166,22 @@ local M
 							fiber.sleep(math.random(math.max(0.5, fencing_pause-0.5), fencing_pause+0.5))
 						end
 
-						log.info("etcd_cluster is %s (index: %s)", json.encode(etcd_cluster), watch_index)
-						if not in_my_gen() then return end
-
 						-- we yield to get next ev_run before get fiber.time()
 						fiber.sleep(0)
+						if not in_my_gen() then return end
+						log.info("etcd_cluster is %s (index: %s)", json.encode(etcd_cluster), watch_index)
+
 
 						-- we will not step down until deadline.
 						local deadline = fiber.time()+fencing_timeout
 						repeat
 							-- Before ETCD check we better pause
 							-- we do a little bit randomized sleep to not spam ETCD
-							fiber.sleep(
-								math.random(0,
-									0.1*math.min(deadline-fiber.time(),fencing_timeout-fencing_pause)
-								)
-							)
+							local hard_limit = deadline-fiber.time()
+							local soft_limit = fencing_timeout-fencing_pause
+							local rand_sleep = math.random()*0.1*math.min(hard_limit, soft_limit)
+							log.verbose("[sleep] hard:%.3fs soft:%.3fs sleep:%.3fs", hard_limit, soft_limit, rand_sleep)
+							fiber.sleep(rand_sleep)
 							-- After each yield we have to check that we are still in our generation
 							if not in_my_gen() then return end
 
@@ -1181,18 +1191,25 @@ local M
 
 							-- fencing_check(deadline) if it returns true,
 							-- then we update leadership leasing
-							if fencing_check(deadline) then
+							local verdict = fencing_check(deadline)
+							log.verbose("[verdict:%s] Leasing ft:%.3fs up:%.3fs left:%.3fs",
+								verdict == true and "ok"
+									or verdict == false and "step"
+									or "unknown",
+								fencing_timeout,
+								verdict and (fiber.time()+fencing_timeout-deadline) or 0,
+								deadline - fiber.time()
+							)
+							if verdict == false then
+								-- immediate stepdown
+								break
+							elseif verdict then
 								-- update deadline.
 								if deadline <= fiber.time() then
 									log.warn("[fencing] deadline was overflowed deadline:%s, now:%s",
 										deadline, fiber.time()
 									)
 								end
-								log.verbose("[fencing] Leasing ft:%.3fs up:%.3fs left:%.3fs",
-									fencing_timeout,
-									fiber.time()+fencing_timeout-deadline,
-									deadline - fiber.time()
-								)
 								deadline = fiber.time()+fencing_timeout
 							end
 							if not in_my_gen() then return end

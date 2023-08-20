@@ -1,5 +1,6 @@
 local json = require 'json'
 local log = require 'log'
+local fiber = require 'fiber'
 
 local http_client = require 'http.client'
 local digest = require 'digest'
@@ -110,6 +111,7 @@ function M:request(method, path, args )
 	if #query > 0 then qs = '?'..table.concat(query) else  qs = '' end
 	local body = args and args.body or ''
 	local lasterror, lastresponse
+	local deadline = args.deadline
 
 	local len = #self.endpoints
 	for i = 0, len - 1 do
@@ -119,7 +121,11 @@ function M:request(method, path, args )
 		end
 		local uri = string.format("%s/v2/%s%s", self.endpoints[cur], path, qs )
 		-- print("[debug] "..uri)
-		local x = self.client.request(method,uri,body,{timeout = args.timeout or self.timeout or 1; headers = self.headers})
+		local request_timeout = args.timeout or self.timeout or 1
+		if deadline then
+			request_timeout = math.min(deadline-fiber.time(), request_timeout)
+		end
+		local x = self.client.request(method,uri,body,{timeout = request_timeout; headers = self.headers})
 		lastresponse = x
 		local status,reply = pcall(json.decode,x and x.body)
 
@@ -138,6 +144,10 @@ function M:request(method, path, args )
 			else
 				lasterror = { errorCode = 500, message = x.reason }
 			end
+		end
+
+		if deadline and deadline < fiber.time() then
+			break
 		end
 	end
 	return lasterror, lastresponse
@@ -181,8 +191,17 @@ function M:recursive_extract(cut, node, storage)
 	if not storage then return _storage[''] end
 end
 
-function M:list(keyspath)
-	local res, response = self:request("GET","keys"..keyspath, { recursive = true, quorum = not self.reduce_listing_quorum })
+function M:list(keyspath, opts)
+	if type(opts) ~= 'table' then
+		opts = {}
+	end
+	if opts.recursive == nil then
+		opts.recursive = true
+	end
+	if opts.quorum == nil then
+		opts.quorum = not self.reduce_listing_quorum
+	end
+	local res, response = self:request("GET","keys"..keyspath, opts)
 	-- print(yaml.encode(res))
 	if res.node then
 		local result = self:recursive_extract(keyspath,res.node)

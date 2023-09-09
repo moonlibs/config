@@ -4,6 +4,7 @@ local json = require 'json'.new()
 local yaml = require 'yaml'.new()
 local digest = require 'digest'
 local fiber  = require 'fiber'
+local clock  = require 'clock'
 json.cfg{ encode_invalid_as_nil = true }
 yaml.cfg{ encode_use_tostring = true }
 
@@ -96,6 +97,19 @@ local function reflect_internals()
 				end
 			end
 			break;
+		elseif vars.reload_cfg then
+			table.insert(steps,"reload_cfg")
+			peekf = vars.reload_cfg
+		elseif vars.reconfig_modules then
+			table.insert(steps,"reconfig_modules")
+			for k in pairs(peek) do
+				if peek[k] == true then
+					if vars[k] ~= nil then
+						peek[k] = vars[k]
+					end
+				end
+			end
+			peekf = vars.reconfig_modules
 		else
 			for k,v in pairs(vars) do log.info("var %s=%s",k,v) end
 			error(string.format("Bad vars for %s after steps: %s", peekf, table.concat(steps, ", ")))
@@ -775,7 +789,9 @@ local M
 				-- subject to change, just a PoC
 				local etcd_conf = args.etcd or cfg.etcd
 				if etcd_conf then
+					local s = clock.time()
 					cfg = etcd_load(M, etcd_conf, cfg)
+					log.info("etcd_load took %.3fs", clock.time()-s)
 				end
 
 				if args.load then

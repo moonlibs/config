@@ -1,5 +1,8 @@
-FROM tarantool/tarantool:2.10
+ARG IMAGE=1.10.14
+FROM config-test-builder as builder
 
-RUN apk add -u git cmake make gcc musl-dev
-RUN tarantoolctl rocks install luatest 0.5.7
-RUN tarantoolctl rocks install luacov-console
+FROM tarantool/tarantool:${IMAGE}
+
+WORKDIR /root
+COPY --from=builder /root/.rocks /root/.rocks
+WORKDIR /opt/tarantool

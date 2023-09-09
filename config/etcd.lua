@@ -1,6 +1,7 @@
 local json = require 'json'
 local log = require 'log'
 local fiber = require 'fiber'
+local clock = require 'clock'
 
 local http_client = require 'http.client'
 local digest = require 'digest'
@@ -51,6 +52,7 @@ end
 setmetatable(M,{ __call = M.new })
 
 function M:discovery()
+	local start_at = clock.time()
 	local timeout = self.timeout or 1
 	local new_endpoints = {}
 	local tried = {}
@@ -83,14 +85,14 @@ function M:discovery()
 		end
 	end
 	if #new_endpoints == 0 then
-		error("Failed to discover members "..table.concat(tried,", "),2)
+		error("Failed to discover members "..table.concat(tried,", ")..(" in %.3fs"):format(clock.time()-start_at),2)
 	end
 	if self.discover_endpoints then
 		self.endpoints = new_endpoints
 		table.insert(self.endpoints,table.remove(self.endpoints,1))
-		log.info("discovered etcd endpoints "..table.concat(self.endpoints,", "))
+		log.info("discovered etcd endpoints "..table.concat(self.endpoints,", ")..(" in %.3fs"):format(clock.time()-start_at))
 	else
-		log.info("hardcoded etcd endpoints "..table.concat(self.endpoints,", "))
+		log.info("hardcoded etcd endpoints "..table.concat(self.endpoints,", ")..(" in %.3fs"):format(clock.time()-start_at))
 	end
 	self.current = math.random(#self.endpoints)
 end

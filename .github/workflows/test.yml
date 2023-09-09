@@ -1,0 +1,19 @@
+name: Create and push rockspec for moonlibs/config
+
+on:
+  push:
+
+env:
+  ROCK_NAME: config
+
+jobs:
+  test-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: ["1.10.15", "2.8.4", "2.10.6", "2.11.0", "2.11.1"]
+    steps:
+    - uses: actions/checkout@master
+    - uses: docker/setup-buildx-action@v2
+    - name: run test suite for ${{matrix.version}}
+      run: make test-${{matrix.version}}

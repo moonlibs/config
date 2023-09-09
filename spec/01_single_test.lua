@@ -1,14 +1,7 @@
 local t = require 'luatest' --[[@as luatest]]
 local uri = require 'uri'
 
-local base_config = {
-	apps = {
-		single = {
-			common = { box = { log_level = 4 } },
-		}
-	}
-}
-
+---@class test.config.single:luatest.group
 local g = t.group('single', {
 	{ instances = {single = '127.0.0.1:3301'}, run = {'single'} },
 	{
@@ -27,41 +20,33 @@ local fio = require 'fio'
 local root = fio.dirname(this_file)
 local init_lua = fio.pathjoin(root, 'mock', 'single', 'init.lua')
 
-local base_env = {
-	TT_WAL_DIR = nil, -- will be set at before_each trigger
-	TT_MEMTX_DIR = nil,  -- will be set at before_each trigger
-	TT_ETCD_PREFIX = '/apps/single',
-	TT_CONFIG = fio.pathjoin(root, 'mock', 'single', 'conf.lua'),
-	TT_MASTER_SELECTION_POLICY = 'etcd.instance.single',
-	TT_ETCD_ENDPOINTS = os.getenv('TT_ETCD_ENDPOINTS') or "http://127.0.0.1:2379",
-}
+local base_env
 
 local h = require 'spec.helper'
 local test_ctx = {}
 
-local working_dir
-
-g.before_each(function()
-	working_dir = h.create_workdir()
+g.before_each(function(cg)
+	local working_dir = h.create_workdir()
+	base_env = {
+		TT_ETCD_PREFIX = '/apps/single',
+		TT_CONFIG = fio.pathjoin(root, 'mock', 'single', 'conf.lua'),
+		TT_MASTER_SELECTION_POLICY = 'etcd.instance.single',
+		TT_ETCD_ENDPOINTS = os.getenv('TT_ETCD_ENDPOINTS') or "http://127.0.0.1:2379",
+	}
 	base_env.TT_WAL_DIR = working_dir
 	base_env.TT_MEMTX_DIR = working_dir
-end)
+	base_env.TT_WORK_DIR = working_dir
 
-g.after_each(function()
-	for _, info in pairs(test_ctx) do
-		for _, tt in pairs(info.tts) do
-			tt.tt:stop()
-		end
-	end
-
-	h.clean_directory(working_dir)
+	local base_config = {
+		apps = {
+			single = {
+				common = { box = { log_level = 1 } },
+			}
+		}
+	}
 	h.clear_etcd()
-end)
 
-function g.test_run_instances(cg)
 	local params = cg.params
-	local this_ctx = { tts = {} }
-	test_ctx[cg.name] = this_ctx
 
 	local etcd_config = table.deepcopy(base_config)
 	etcd_config.apps.single.instances = {}
@@ -69,39 +54,41 @@ function g.test_run_instances(cg)
 		etcd_config.apps.single.instances[instance_name] = { box = { listen = listen_uri } }
 	end
 
+	local ctx = { tts = {}, env = base_env, etcd_config = etcd_config, params = cg.params }
+	test_ctx[cg.name] = ctx
+
 	h.upload_to_etcd(etcd_config)
+end)
 
-	for _, name in ipairs(params.run) do
-		local env = table.deepcopy(base_env)
-		env.TT_INSTANCE_NAME = name
-		local net_box_port = tonumber(uri.parse(etcd_config.apps.single.instances[name].box.listen).service)
-
-		local tt = h.start_tarantool({
-			alias = name,
-			env = env,
-			command = init_lua,
-			args = {},
-			net_box_port = net_box_port,
-		})
-
-		table.insert(this_ctx.tts, {
-			tt = tt,
-			net_box_port = net_box_port,
-			env = env,
-			name = name,
-		})
+g.after_each(function()
+	for _, info in pairs(test_ctx) do
+		for _, tt in pairs(info.tts) do
+			tt.server:stop()
+		end
+		h.clean_directory(info.env.TT_WAL_DIR)
+		h.clean_directory(info.env.TT_MEMTX_DIR)
+		h.clean_directory(info.env.TT_WORK_DIR)
 	end
 
-	for _, tt in ipairs(this_ctx.tts) do
-		tt.tt:connect_net_box()
-		local box_cfg = tt.tt:get_box_cfg()
+	h.clear_etcd()
+end)
+
+function g.test_run_instances(cg)
+	local ctx = test_ctx[cg.name]
+
+	-- Start tarantools
+	h.start_all_tarantools(ctx, init_lua, root, ctx.etcd_config.apps.single.instances)
+
+	for _, tt in ipairs(ctx.tts) do
+		tt.server:connect_net_box()
+		local box_cfg = tt.server:get_box_cfg()
 		t.assert_covers(box_cfg, {
-			log_level = etcd_config.apps.single.common.box.log_level,
-			listen = etcd_config.apps.single.instances[tt.name].box.listen,
+			log_level = ctx.etcd_config.apps.single.common.box.log_level,
+			listen = ctx.etcd_config.apps.single.instances[tt.name].box.listen,
 			read_only = false,
 		}, 'box.cfg is correct')
 
-		local conn = tt.tt --[[@as luatest.server]]
+		local conn = tt.server --[[@as luatest.server]]
 		local ret = conn:exec(function()
 			local r = table.deepcopy(config.get('sys'))
 			for k, v in pairs(r) do
@@ -119,14 +106,15 @@ function g.test_run_instances(cg)
 		}, 'get("sys") has correct fields')
 	end
 
-	for _, tt in ipairs(this_ctx.tts) do
-		local conn = tt.tt --[[@as luatest.server]]
+	-- restart tarantools
+	for _, tt in ipairs(ctx.tts) do
+		local conn = tt.server --[[@as luatest.server]]
 		h.restart_tarantool(conn)
 
-		local box_cfg = tt.tt:get_box_cfg()
+		local box_cfg = tt.server:get_box_cfg()
 		t.assert_covers(box_cfg, {
-			log_level = etcd_config.apps.single.common.box.log_level,
-			listen = etcd_config.apps.single.instances[tt.name].box.listen,
+			log_level = ctx.etcd_config.apps.single.common.box.log_level,
+			listen = ctx.etcd_config.apps.single.instances[tt.name].box.listen,
 			read_only = false,
 		}, 'box.cfg is correct after restart')
 

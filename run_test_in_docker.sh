@@ -2,4 +2,5 @@
 
 pwd
 rm -rf /root/.cache/
-.rocks/bin/luatest --coverage -c -v spec/01_single_test.lua
+cp -ar /root/.rocks /source/config/.rocks
+/source/config/.rocks/bin/luatest --coverage -v spec/

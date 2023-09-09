@@ -1,5 +1,6 @@
 local fiber = require "fiber"
 
+require 'package.reload'
 require 'config' {
 	mkdir = true,
 	print_config = true,

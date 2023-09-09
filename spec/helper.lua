@@ -2,11 +2,11 @@ local h = {}
 local t = require 'luatest' --[[@as luatest]]
 local fio = require 'fio'
 local log = require 'log'
+local uri = require 'uri'
 local fun = require 'fun'
 local clock = require 'clock'
 local fiber = require 'fiber'
-local http = require 'http.client'
-local json = require 'json'
+local json  = require 'json'
 
 ---Creates temporary working directory
 ---@return string
@@ -69,7 +69,8 @@ function h.clear_etcd()
 	local etcd = h.get_etcd()
 
 	local _, res = etcd:request('DELETE', 'keys/apps', { recursive = true, dir = true, force = true })
-	assert(res.status >= 200 and res.status < 300, ("%s %s"):format(res.status, res.body))
+	log.info("clear_etcd(%s) => %s:%s", '/apps', res.status, res.reason)
+	assert(res.status >= 200 and(res.status < 300 or res.status == 404), ("%s %s"):format(res.status, res.body))
 end
 
 function h.upload_to_etcd(tree)
@@ -80,57 +81,93 @@ function h.upload_to_etcd(tree)
 	table.sort(keys)
 	for _, key in ipairs(keys) do
 		do
-			local _, res = etcd:request('PUT', 'keys'..key, { value = flat[key] })
-			log.info(res)
+			local _, res = etcd:request('PUT', 'keys'..key, { value = flat[key], quorum = true })
 			assert(res.status < 300 and res.status >= 200, res.reason)
 		end
 	end
 
 	local key = keys[1]:match('^(/[^/]+)')
-	log.info((etcd:list(key)))
+	log.info("list(%s): => %s", key, json.encode(etcd:list(key)))
 end
 
 ---Starts new tarantool server
 ---@param opts luatest.server.options
 ---@return luatest.server
 function h.start_tarantool(opts)
-	log.info(opts)
+	log.info("starting tarantool %s", json.encode(opts))
 	local srv = t.Server:new(opts)
 	srv:start()
 
 	local process = srv.process
 
-	local deadline = clock.time() + 15
+	local deadline = clock.time() + 30
 	while clock.time() < deadline do
-		fiber.sleep(3)
-		assert(process:is_alive(), "tarantool is dead")
-
-		if pcall(function() srv:connect_net_box() end) then
-			break
-		end
+		fiber.sleep(0.1)
+		if process:is_alive() then break end
 	end
-
 	return srv
 end
 
----comment
----@param conn luatest.server
-function h.restart_tarantool(conn)
-	conn:stop()
+function h.start_all_tarantools(ctx, init_lua, root, instances)
+	for _, name in ipairs(ctx.params.run) do
+		local env = table.deepcopy(ctx.env)
+		env.TT_INSTANCE_NAME = name
+		local net_box_port = tonumber(uri.parse(instances[name].box.listen).service)
+
+		local tt = h.start_tarantool({
+			alias = name,
+			env = env,
+			command = init_lua,
+			args = {},
+			net_box_port = net_box_port,
+			workdir = root,
+		})
+
+		table.insert(ctx.tts, {
+			server = tt,
+			net_box_port = net_box_port,
+			env = env,
+			name = name,
+		})
+	end
+
+	for _, tt in ipairs(ctx.tts) do
+		h.wait_tarantool(tt.server)
+	end
+end
+
+---@param srv luatest.server
+function h.wait_tarantool(srv)
+	t.helpers.retrying({ timeout = 30, delay = 0.1 }, function ()
+		srv:connect_net_box()
+		srv:call('box.info')
+	end)
+end
+
+---@param server luatest.server
+function h.restart_tarantool(server)
+	server:stop()
 	local deadline = clock.time() + 15
 
 	fiber.sleep(3)
-	conn:start()
+	server:start()
 
 	while clock.time() < deadline do
 		fiber.sleep(3)
-		assert(conn.process:is_alive(), "tarantool is dead")
+		assert(server.process:is_alive(), "tarantool is dead")
 
-		if pcall(function() conn:connect_net_box() end) then
+		if pcall(function() server:connect_net_box() end) then
 			break
 		end
 
 	end
+end
+
+---@param server luatest.server
+function h.reload_tarantool(server)
+	server:exec(function()
+		package.reload()
+	end)
 end
 
 

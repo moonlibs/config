@@ -10,9 +10,9 @@ env:
 
 jobs:
   pack-and-push-tagged-rockspec:
-   runs-on: ubuntu-latest
-   if: startsWith(github.ref, 'refs/tags')
-   steps:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags')
+    steps:
     - uses: actions/checkout@master
     - uses: tarantool/setup-tarantool@v1
       with:

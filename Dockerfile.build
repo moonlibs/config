@@ -1,0 +1,6 @@
+FROM tarantool/tarantool:2.10 as builder
+RUN apk add -u git cmake make gcc musl-dev curl wget
+WORKDIR /root
+RUN tarantoolctl rocks install luatest scm-1
+RUN tarantoolctl rocks install luacov-console 1.1.0
+RUN tarantoolctl rocks --server https://moonlibs.github.io/rocks install package-reload scm-1

@@ -13,23 +13,23 @@ x-etcd: &etcd
   networks:
     - tarantool
 
-x-tt: &tt
-  build: .
-  volumes:
-    - $PWD/../:/opt/tarantool/.rocks/share/tarantool:ro
-    - $PWD/app:/opt/tarantool
-    - $PWD/net:/opt/tarantool/net:ro
-  depends_on:
-    etcd0:
-      condition: service_started
-    etcd1:
-      condition: service_started
-    etcd2:
-      condition: service_started
-  privileged: true
-  networks:
-    - tarantool
-  command: ["/bin/sh", "-c", "sleep 5 && tarantool /opt/tarantool/init.lua"]
+# x-tt: &tt
+#   build: .
+#   volumes:
+#     - $PWD/../:/opt/tarantool/.rocks/share/tarantool:ro
+#     - $PWD/app:/opt/tarantool
+#     - $PWD/net:/opt/tarantool/net:ro
+#   depends_on:
+#     etcd0:
+#       condition: service_started
+#     etcd1:
+#       condition: service_started
+#     etcd2:
+#       condition: service_started
+#   privileged: true
+#   networks:
+#     - tarantool
+#   command: ["/bin/sh", "-c", "sleep 5 && tarantool /opt/tarantool/init.lua"]
 
 networks:
   tarantool:
@@ -62,28 +62,28 @@ services:
       ETCD_ADVERTISE_CLIENT_URLS: http://etcd2:2379
       ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd2:2380
 
-  etcd_load:
-    image: registry.gitlab.com/ochaton/switchover:010a6965
-    networks:
-      - tarantool
-    volumes:
-      - $PWD/instance.etcd.yaml:/instance.etcd.yaml:ro
-    depends_on:
-      etcd0:
-        condition: service_started
-      etcd1:
-        condition: service_started
-      etcd2:
-        condition: service_started
-    entrypoint: ['']
-    command: ["/bin/sh", "-c", "sleep 3 && switchover -v -e http://etcd0:2379,http://etcd1:2379,http://etcd2:2379 etcd load / /instance.etcd.yaml"]
-  instance_01:
-    <<: *tt
-    container_name: instance_01
-    environment:
-      TT_INSTANCE_NAME: instance_01
-  instance_02:
-    <<: *tt
-    container_name: instance_02
-    environment:
-      TT_INSTANCE_NAME: instance_02
+  # etcd_load:
+  #   image: registry.gitlab.com/ochaton/switchover:2.7.0.20
+  #   networks:
+  #     - tarantool
+  #   volumes:
+  #     - $PWD/instance.etcd.yaml:/instance.etcd.yaml:ro
+  #   depends_on:
+  #     etcd0:
+  #       condition: service_started
+  #     etcd1:
+  #       condition: service_started
+  #     etcd2:
+  #       condition: service_started
+  #   entrypoint: ['']
+  #   command: ["/bin/sh", "-c", "sleep 3 && switchover -v -e http://etcd0:2379,http://etcd1:2379,http://etcd2:2379 etcd load / /instance.etcd.yaml"]
+  # instance_01:
+  #   <<: *tt
+  #   container_name: instance_01
+  #   environment:
+  #     TT_INSTANCE_NAME: instance_01
+  # instance_02:
+  #   <<: *tt
+  #   container_name: instance_02
+  #   environment:
+  #     TT_INSTANCE_NAME: instance_02

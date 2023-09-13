@@ -1,11 +1,34 @@
 local json = require 'json'
 local log = require 'log'
+if log.new then
+	log = log.new('moonlibs.config')
+end
 local fiber = require 'fiber'
 local clock = require 'clock'
 
 local http_client = require 'http.client'
 local digest = require 'digest'
 
+---@class moonlibs.config.etcd.opts
+---@field endpoints? string[] (default: {'http://127.0.0.1:4001','http://127.0.0.1:2379'}) list of clientURLs to etcd
+---@field timeout? number (default: 1) timeout of request to each node to etcd
+---@field boolean_auto? boolean (default: false) when true each string value `true`, `false` is converted to boolean value
+---@field print_config? boolean (default: false) when true loaded configuration from etcd is printed out
+---@field discover_endpoints? boolean (default: true) when false connector does not automatically discovers etcd endpoints
+---@field reduce_listing_quorum? boolean (default: false) when true connector does not request etcd:list with quorum
+---@field login? string allows to specify username for each request (Basic-auth)
+---@field password? string allows to specify password for each request (Basic-auth)
+
+---@class moonlibs.config.etcd
+---@field endpoints string[] (default: {'http://127.0.0.1:4001','http://127.0.0.1:2379'}) list of clientURLs to etcd
+---@field client http
+---@field timeout number (default: 1) timeout of request to each node to etcd
+---@field boolean_auto? boolean (default: false) when true each string value `true`, `false` is converted to boolean value
+---@field print_config? boolean (default: false) when true loaded configuration from etcd is printed out
+---@field discover_endpoints boolean (default: true) when false connector does not automatically discovers etcd endpoints
+---@field reduce_listing_quorum? boolean (default: false) when true connector does not request etcd:list with quorum
+---@field authorization? string Authorization header for Basic-auth (is set only when login is present)
+---@field headers? table<string,any> headers which are provided on each request
 local M = {}
 
 M.err = {}
@@ -30,6 +53,10 @@ function M.errstr(code)
 	return M.err[ tonumber(code) ] or string.format("Unknown error %s",code)
 end
 
+---Creates new etcd connector
+---@param mod moonlibs.config.etcd
+---@param options moonlibs.config.etcd.opts
+---@return moonlibs.config.etcd
 function M.new(mod,options)
 	local self = setmetatable({},{__index=mod})
 	self.endpoints = options.endpoints or {'http://127.0.0.1:4001','http://127.0.0.1:2379'}
@@ -51,6 +78,8 @@ end
 
 setmetatable(M,{ __call = M.new })
 
+---Discovers every ETCD endpoint by requesting clientURLs (/v2/members)
+--- ?: make it parallel
 function M:discovery()
 	local start_at = clock.time()
 	local timeout = self.timeout or 1
@@ -97,6 +126,16 @@ function M:discovery()
 	self.current = math.random(#self.endpoints)
 end
 
+---@class moonlibs.etcd.request.opts
+---@field deadline? number deadline of request (in seconds, fractional)
+---@field timeout? number timeout of request to each node (in seconds, fractional)
+---@field body? string request body (for PUT)
+
+---Performs etcd request
+---@param method 'PUT'|'GET'|'DELETE'|'HEAD' http_method
+---@param path string etcd path after /v2/
+---@param args? moonlibs.etcd.request.opts
+---@return table, HTTPResponse
 function M:request(method, path, args )
 	-- path must be prefixed outside
 	-- TODO: auth
@@ -108,6 +147,8 @@ function M:request(method, path, args )
 			table.insert(query, '=')
 			table.insert(query, tostring(v))
 		end
+	else
+		args = {}
 	end
 	local qs
 	if #query > 0 then qs = '?'..table.concat(query) else  qs = '' end
@@ -127,9 +168,20 @@ function M:request(method, path, args )
 		if deadline then
 			request_timeout = math.min(deadline-fiber.time(), request_timeout)
 		end
+		local s = clock.time()
 		local x = self.client.request(method,uri,body,{timeout = request_timeout; headers = self.headers})
 		lastresponse = x
 		local status,reply = pcall(json.decode,x and x.body)
+		local logger = log.verbose
+		if x.status >= 500 then
+			logger = log.error
+		end
+		logger("%s %s (to:%.3fs) finished with %s%s %s (in %.3fs)",
+			method, uri, request_timeout, x.status,
+			status and reply and reply.errorCode and (reply.message or M.err[reply.errorCode] or reply.errorCode),
+			(x.headers or {})['X-Etcd-Index'],
+			clock.time()-s
+		)
 
 		-- 408 for timeout
 		if x.status < 500 and x.status ~= 408 then
@@ -193,6 +245,15 @@ function M:recursive_extract(cut, node, storage)
 	if not storage then return _storage[''] end
 end
 
+---@class moonlibs.config.etcd.list.opts:moonlibs.etcd.request.opts
+---@field recursive? boolean (default: true) should listing be recursive
+---@field quorum? boolean (default: not reduce_listing_quorum) when true requests quorum read
+
+---Performs listing by given path
+---@param keyspath string path inside etcd
+---@param opts moonlibs.config.etcd.list.opts
+---@return unknown
+---@return HTTPResponse
 function M:list(keyspath, opts)
 	if type(opts) ~= 'table' then
 		opts = {}
@@ -218,6 +279,14 @@ function M:list(keyspath, opts)
 	end
 end
 
+---@class moonlibs.config.etcd.wait.opts
+---@field timeout? number (default: etcd.timeout) timeout for each node to await changes
+---@field index number etcd-index that should be awaited
+
+---Awaits any change in subtree recursively
+---@param keyspath string
+---@param args moonlibs.config.etcd.wait.opts
+---@return boolean not_timed_out, HTTPResponse
 function M:wait(keyspath, args)
 	args = args or {}
 	local _, response = self:request("GET","keys"..keyspath, {

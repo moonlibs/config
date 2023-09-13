@@ -1,9 +1,9 @@
 local fiber = require "fiber"
 
 require 'package.reload'
+
 require 'config' {
 	mkdir = true,
-	print_config = true,
 	instance_name = os.getenv("TT_INSTANCE_NAME"),
 	file = 'conf.lua',
 	master_selection_policy = 'etcd.cluster.master',
@@ -31,9 +31,10 @@ fiber.create(function()
 		for _ = 1, 10 do
 			local f = fiber.create(function()
 				fiber.self():set_joinable(true)
-				for i = 1, 100 do
-					box.space.T:replace{i, box.info.id, box.info.vclock}
+				for _ = 1, 10 do
+					box.space.T:insert{box.space.T:len(), box.info.id, box.info.vclock}
 				end
+				fiber.sleep(0.001)
 			end)
 			table.insert(fibers, f)
 		end

@@ -1,0 +1,19 @@
+runreport = false
+deletestats = false
+
+exclude = {
+	"spec/",
+	"test/",
+	"test_peek",
+	"%.rocks/",
+	"builtin/",
+}
+
+coveralls = {
+	root = "/",
+	debug = true,
+	pathcorrect = {
+			{ "^/home/runner/work/config/config/", "" },
+			{ "^/source/config", "" },
+	},
+}

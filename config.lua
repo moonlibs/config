@@ -1,4 +1,8 @@
+---@diagnostic disable: inject-field
 local log = require 'log'
+if log.new then
+	log = log.new('moonlibs.config')
+end
 local fio = require 'fio'
 local json = require 'json'.new()
 local yaml = require 'yaml'.new()
@@ -8,6 +12,9 @@ local clock  = require 'clock'
 json.cfg{ encode_invalid_as_nil = true }
 yaml.cfg{ encode_use_tostring = true }
 
+---Retrieves all upvalues of given function and returns them as kv-map
+---@param fun fun()
+---@return table<string,any> variables
 local function lookaround(fun)
 	local vars = {}
 	local i = 1
@@ -17,14 +24,26 @@ local function lookaround(fun)
 		vars[n] = v
 		i = i + 1
 	end
-	i = 1
 
-	return vars, i - 1
+	return vars
 end
 
+---@private
+---@class moonlibs.config.reflect_internals
+---@field dynamic_cfg table<string,boolean>
+---@field default_cfg table<string,any>
+---@field upgrade_cfg? fun(cfg: table<string,any>, translate_cfg: table): table<string,any>
+---@field template_cfg? table
+---@field translate_cfg? table
+---@field log? table
+
+
+---Unwraps box.cfg and retrieves dynamic_cfg, default_cfg tables
+---@return moonlibs.config.reflect_internals
 local function reflect_internals()
 	local peek = {
 		dynamic_cfg   = {};
+		default_cfg   = {};
 		upgrade_cfg   = true;
 		translate_cfg = true;
 		template_cfg  = true;
@@ -47,7 +66,12 @@ local function reflect_internals()
 			error(string.format("Neither function nor callable argument %s after steps: %s", peekf, table.concat(steps, ", ")))
 		end
 
-		local vars, _ = lookaround(peekf)
+		local vars = lookaround(peekf)
+		if type(vars.default_cfg) == 'table' then
+			for k in pairs(vars.default_cfg) do
+				peek.default_cfg[k] = vars.default_cfg[k]
+			end
+		end
 		if allow_unwrap and (vars.orig_cfg or vars.origin_cfg) then
 			-- It's a wrap of tarantoolctl/tt, unwrap and repeat
 			peekf = (vars.orig_cfg or vars.origin_cfg)
@@ -124,7 +148,11 @@ end
 
 local load_cfg = reflect_internals()
 
--- TODO: suppress deprecation
+---Filters only valid keys from given cfg
+---
+---Edits given cfg and returns only clear config
+---@param cfg table<string,any>
+---@return table<string,any>
 local function prepare_box_cfg(cfg)
 	-- 1. take config, if have upgrade, upgrade it
 	if load_cfg.upgrade_cfg then
@@ -311,6 +339,7 @@ local function toboolean(v)
 	return false
 end
 
+---@type table<string, fun(M: moonlibs.config, instance_name: string, common_cfg: table, instance_cfg: table, cluster_cfg: table, local_cfg: table):table >
 local master_selection_policies;
 master_selection_policies = {
 	['etcd.instance.single'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
@@ -373,8 +402,10 @@ master_selection_policies = {
 			if cluster_cfg.master == instance_name then
 				log.info("Instance is declared as cluster master, set read_only=false")
 				cfg.box.read_only = false
-				cfg.box.replication_connect_quorum = 1
-				cfg.box.replication_connect_timeout = 1
+				if cfg.box.bootstrap_strategy ~= 'auto' then
+					cfg.box.replication_connect_quorum = 1
+					cfg.box.replication_connect_timeout = 1
+				end
 			else
 				log.info("Cluster has another master %s, not me %s, set read_only=true", cluster_cfg.master, instance_name)
 				cfg.box.read_only = true
@@ -472,6 +503,17 @@ local function gen_cluster_uuid(cluster_name)
 	error("Can't generate uuid for cluster "..cluster_name, 2)
 end
 
+---@class moonlibs.config.opts.etcd:moonlibs.config.etcd.opts
+---@field instance_name string Mandatory name of the instance
+---@field prefix string Mandatory prefix inside etcd tree
+---@field uuid? 'auto' When auto config generates replicaset_uuid and instance_uuid for nodes
+---@field fixed? table Optional ETCD tree
+
+---Loads configuration from etcd and evaluate master_selection_policy
+---@param M moonlibs.config
+---@param etcd_conf moonlibs.config.opts.etcd
+---@param local_cfg table<string,any>
+---@return table<string, any>
 local function etcd_load( M, etcd_conf, local_cfg )
 
 	local etcd
@@ -552,18 +594,12 @@ local function etcd_load( M, etcd_conf, local_cfg )
 		print("Loaded config from etcd",yaml.encode(all_cfg))
 	end
 	local common_cfg = all_cfg.common
-	-- local common_cfg = etcd:get_common()
 	local all_instances_cfg = all_cfg.instances
-	-- local all_instances_cfg = etcd:get_instances()
 
 	local instance_cfg = all_instances_cfg[instance_name]
 	assert(instance_cfg,"Instance name "..instance_name.." is not known to etcd")
 
-	-- local all_clusters_cfg = etcd:get_clusters()
 	local all_clusters_cfg = all_cfg.clusters or all_cfg.shards
-
-	-- print(yaml.encode(all_clusters_cfg))
-
 
 	local master_selection_policy
 	local cluster_cfg
@@ -628,13 +664,14 @@ local function etcd_load( M, etcd_conf, local_cfg )
 					"Start instance "..cfg.box.listen,
 					" with replication:"..table.concat(cfg.box.replication,", "),
 					string.format("timeout: %s, quorum: %s, lag: %s",
-						cfg.box.replication_connect_timeout or 'def:30',
+						cfg.box.replication_connect_timeout
+							or ('def:%s'):format(load_cfg.default_cfg.replication_connect_quorum or 30),
 						cfg.box.replication_connect_quorum or 'def:full',
-						cfg.box.replication_sync_lag or 'def:10'
+						cfg.box.replication_sync_lag
+							or ('def:%s'):format(load_cfg.default_cfg.replication_sync_lag or 10)
 					)
 				)
 			end
-
 		--end
 	end
 	-- print(yaml.encode(cfg))
@@ -675,9 +712,57 @@ local function optimal_rcq(upstreams)
 	return rcq
 end
 
+local function do_cfg(boxcfg, cfg)
+	for key, val in pairs(cfg) do
+		if load_cfg.default_cfg[key] == nil and load_cfg.dynamic_cfg[key] == nil then
+			local warn = string.format("Dropping non-boxcfg option '%s' given '%s'",key,val)
+			log.warn("%s",warn)
+			print(warn)
+			cfg[key] = nil
+		end
+	end
+	log.info("Just before box.cfg %s", yaml.encode(cfg))
+	boxcfg(cfg)
+end
+
+
+---@class moonlibs.config.opts
+---@field bypass_non_dynamic? boolean (default: true) drops every changed non-dynamic option on reconfiguration
+---@field tidy_load? boolean (default: true) recoveries tarantool with read_only=true
+---@field mkdir? boolean (default: false) should moonlibs/config create memtx_dir and wal_dir
+---@field etcd? moonlibs.config.opts.etcd [legacy] configuration of etcd
+---@field default_replication_connect_timeout? number (default: 1.1) default RCT in seconds
+---@field default_election_mode? election_mode (default: candidate) option is respected only when etcd.cluster.raft is used
+---@field default_synchro_quorum? string|number (default: 'N/2+1') option is respected only when etcd.cluster.raft is used
+---@field default_read_only? boolean (default: false) option is respected only when etcd.instance.read_only is used (deprecated)
+---@field master_selection_policy? 'etcd.cluster.master'|'etcd.cluster.vshard'|'etcd.cluster.raft'|'etcd.instance.single' master selection policy
+---@field strict_mode? boolean (default: false) stricts config retrievals. if key is not found config.get will raise an exception
+---@field strict? boolean (default: false) stricts config retrievals. if key is not found config.get will raise an exception
+---@field default? table<string,any> (default: nil) globally default options for config.get
+---@field on_load? fun(conf: moonlibs.config, cfg: table<string,any>) callback which is called every time config is loaded from file and ETCD
+---@field load? fun(conf: moonlibs.config, cfg: table<string,any>): table<string,any> do not use this callback
+---@field on_before_cfg? fun(conf: moonlibs.config, cfg: table<string,any>) callback is called right before running box.cfg (but after on_load)
+---@field boxcfg? fun(cfg: table<string,any>) [legacy] when provided this function will be called instead box.cfg. tidy_load and everything else will not be used.
+---@field wrap_box_cfg? fun(cfg: table<string,any>) callback is called instead box.cfg. But tidy_load is respected. Use this, if you need to proxy every option to box.cfg on application side
+---@field on_after_cfg? fun(conf: moonlibs.config, cfg: table<string,any>) callback which is called after full tarantool configuration
+
+---@class moonlibs.config: moonlibs.config.opts
+---@field etcd moonlibs.config.etcd
+---@field public _load_cfg table
+---@field public _flat table
+---@field public _fencing_f? Fiber
+---@operator call(moonlibs.config.opts): moonlibs.config
+
+---@type moonlibs.config
 local M
 	M = setmetatable({
 		console = {};
+		---Retrieves value from config
+		---@overload fun(k: string, def: any?): any?
+		---@param self moonlibs.config
+		---@param k string path inside config
+		---@param def? any optional default value
+		---@return any?
 		get = function(self,k,def)
 			if self ~= M then
 				def = k
@@ -696,6 +781,9 @@ local M
 			end
 		end
 	},{
+		---Reinitiates moonlibs.config
+		---@param args moonlibs.config.opts
+		---@return moonlibs.config
 		__call = function(_, args)
 			-- args MUST belong to us, because of modification
 			local file
@@ -721,6 +809,7 @@ local M
 			M.master_selection_policy = args.master_selection_policy
 			M.default = args.default
 			M.strict_mode = args.strict_mode or args.strict or false
+			M._load_cfg = load_cfg
 			-- print("config", "loading ",file, json.encode(args))
 			if not file then
 				file = get_opt()
@@ -802,6 +891,10 @@ local M
 					error("No box.* config given", 2)
 				end
 
+				if cfg.box.remote_addr then
+					cfg.box.remote_addr = nil
+				end
+
 				if args.bypass_non_dynamic then
 					cfg.box = prepare_box_cfg(cfg.box)
 				end
@@ -812,10 +905,6 @@ local M
 				cfg.sys.boxcfg = nil
 				cfg.sys.on_load = nil
 
-				-- if not cfg.box.custom_proc_title and args.instance_name then
-				-- 	cfg.box.custom_proc_title = args.instance_name
-				-- end
-
 				-- latest modifications and fixups
 				if args.on_load then
 					args.on_load(M,cfg)
@@ -823,7 +912,7 @@ local M
 				return cfg
 			end
 
-			local cfg = load_config()
+			local cfg = load_config() --[[@as table]]
 
 			M._flat = flatten(cfg)
 
@@ -852,16 +941,10 @@ local M
 				end
 			end
 
-			if cfg.box.remote_addr then
-				cfg.box.remote_addr = nil
-			end
-
-
-			-- print(string.format("Starting app: %s", yaml.encode(cfg.box)))
-			local boxcfg
+			local boxcfg = box.cfg
 
 			if args.boxcfg then
-				args.boxcfg( cfg.box )
+				do_cfg(args.boxcfg, cfg.box)
 			else
 				if args.wrap_box_cfg then
 					boxcfg = args.wrap_box_cfg
@@ -877,7 +960,7 @@ local M
 									snap_dir = "."
 								end
 							end
-							local bootstrapped = false
+							local bootstrapped
 							for _,v in pairs(fio.glob(snap_dir..'/*.snap')) do
 								bootstrapped = v
 							end
@@ -886,13 +969,15 @@ local M
 								print("Have etcd, use tidy load")
 								local ro = cfg.box.read_only
 								cfg.box.read_only = true
-								if not ro then
-									-- Only if node should be master
-									cfg.box.replication_connect_quorum = 1
-									cfg.box.replication_connect_timeout = M.default_replication_connect_timeout
-								elseif not cfg.box.replication_connect_quorum then
-									-- For replica tune up to N/2+1
-									cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
+								if cfg.box.bootstrap_strategy ~= 'auto' then
+									if not ro then
+										-- Only if node should be master
+										cfg.box.replication_connect_quorum = 1
+										cfg.box.replication_connect_timeout = M.default_replication_connect_timeout
+									elseif not cfg.box.replication_connect_quorum then
+										-- For replica tune up to N/2+1
+										cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
+									end
 								end
 								log.info("Start tidy loading with ro=true%s rcq=%s rct=%s (snap=%s)",
 									ro ~= true and string.format(' (would be %s)',ro) or '',
@@ -900,17 +985,31 @@ local M
 									bootstrapped
 								)
 							else
-								if not cfg.box.replication_connect_quorum then
-									cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
+								-- not bootstraped yet cluster
+
+								-- if cfg.box.bootstrap_strategy == 'auto' then -- ≥ Tarantool 2.11
+								-- local ro = cfg.box.read_only
+								-- local is_candidate = cfg.box.election_mode == 'candidate'
+								-- 	if not ro and not is_candidate then
+								-- 		-- master but not Raft/candidate
+								-- 		-- we decrease replication for master,
+								-- 		-- to allow him bootstrap himself
+								-- 		cfg.box.replication = {cfg.box.remote_addr or cfg.box.listen}
+								-- 	end
+								if cfg.box.bootstrap_strategy ~= 'auto' then -- < Tarantool 2.11
+									if cfg.box.replication_connect_quorum == nil then
+										cfg.box.replication_connect_quorum = optimal_rcq(cfg.box.replication)
+									end
 								end
+
 								log.info("Start non-bootstrapped tidy loading with ro=%s rcq=%s rct=%s (dir=%s)",
-									cfg.box.read_only, cfg.box.replication_connect_quorum, cfg.box.replication_connect_timeout, snap_dir)
+									cfg.box.read_only, cfg.box.replication_connect_quorum,
+									cfg.box.replication_connect_timeout, snap_dir
+								)
 							end
 						end
 
-						log.info("Just before box.cfg %s", yaml.encode( cfg.box ))
-
-						;(boxcfg or box.cfg)( cfg.box )
+						do_cfg(boxcfg, cfg.box)
 
 						log.info("Reloading config after start")
 
@@ -932,14 +1031,14 @@ local M
 
 						if diff_box then
 							log.info("Reconfigure after load with %s",require'json'.encode(diff_box))
-							;(boxcfg or box.cfg)(diff_box)
+							do_cfg(boxcfg, diff_box)
 						else
 							log.info("Config is actual after load")
 						end
 
 						M._flat = flatten(new_cfg)
 					else
-						(boxcfg or box.cfg)( cfg.box )
+						do_cfg(boxcfg, cfg.box)
 					end
 				else
 					local replication     = cfg.box.replication_source or cfg.box.replication
@@ -951,12 +1050,12 @@ local M
 						cfg.box.replication        = nil
 						cfg.box.replication_source = nil
 
-						(boxcfg or box.cfg)( cfg.box )
+						do_cfg(boxcfg, cfg.box)
 
 						cfg.box.replication        = r
 						cfg.box.replication_source = rs
 					else
-						(boxcfg or box.cfg)( cfg.box )
+						do_cfg(boxcfg, cfg.box)
 					end
 				end
 			end
@@ -969,7 +1068,7 @@ local M
 			local msp = config.get('sys.master_selection_policy')
 			if type(cfg.etcd) == 'table'
 				and config.get('etcd.fencing_enabled')
-				and msp == 'etcd.cluster.master'
+				and (msp == 'etcd.cluster.master' or msp == 'etcd.cluster.vshard')
 				and type(cfg.cluster) == 'string' and cfg.cluster ~= ''
 				and config.get('etcd.reduce_listing_quorum') ~= true
 			then

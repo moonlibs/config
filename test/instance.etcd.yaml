@@ -9,18 +9,22 @@ instance:
       fencing_timeout: 10
       fencing_pause: 5
     box:
-      replication_connect_quorum: 1
+      bootstrap_strategy: auto
       log_level: 5
+      replication_connect_timeout: 3
+      listen: 0.0.0.0:3301
       memtx_memory: 268435456
+      memtx_dir: /var/lib/tarantool/snaps/
+      wal_dir: /var/lib/tarantool/xlogs/
   instances:
     instance_01:
       cluster: instance
       box:
         instance_uuid: 91157a11-0000-0001-0000-000000000000
-        listen: instance_01:3301
+        remote_addr: instance_01:3301
     instance_02:
       cluster: instance
       box:
         instance_uuid: 91157a11-0000-0002-0000-000000000000
-        listen: instance_02:3302
+        remote_addr: instance_02:3301
 ...

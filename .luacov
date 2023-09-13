@@ -9,6 +9,10 @@ exclude = {
 	"builtin/",
 }
 
+pathcorrect = {
+	{ "^/source/config/", "" },
+}
+
 coveralls = {
 	root = "/",
 	debug = true,

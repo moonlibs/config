@@ -665,7 +665,7 @@ local function etcd_load( M, etcd_conf, local_cfg )
 					" with replication:"..table.concat(cfg.box.replication,", "),
 					string.format("timeout: %s, quorum: %s, lag: %s",
 						cfg.box.replication_connect_timeout
-							or ('def:%s'):format(load_cfg.default_cfg.replication_connect_quorum or 30),
+							or ('def:%s'):format(load_cfg.default_cfg.replication_connect_timeout or 30),
 						cfg.box.replication_connect_quorum or 'def:full',
 						cfg.box.replication_sync_lag
 							or ('def:%s'):format(load_cfg.default_cfg.replication_sync_lag or 10)
@@ -751,6 +751,7 @@ end
 ---@field public _load_cfg table
 ---@field public _flat table
 ---@field public _fencing_f? Fiber
+---@field public _enforced_ro? boolean
 ---@operator call(moonlibs.config.opts): moonlibs.config
 
 ---@type moonlibs.config
@@ -779,7 +780,18 @@ local M
 					return
 				end
 			end
-		end
+		end,
+		enforce_ro = function()
+			if not M._ro_enforcable then
+				return false, 'cannot enforce readonly'
+			end
+			M._enforced_ro = true
+			return true, {
+				info_ro = box.info.ro,
+				cfg_ro = box.cfg.read_only,
+				enforce_ro = M._enforced_ro,
+			}
+		end,
 	},{
 		---Reinitiates moonlibs.config
 		---@param args moonlibs.config.opts
@@ -877,6 +889,8 @@ local M
 
 				-- subject to change, just a PoC
 				local etcd_conf = args.etcd or cfg.etcd
+				-- we can enforce ro during recovery only if we have etcd config
+				M._ro_enforcable = M._ro_enforcable and etcd_conf ~= nil
 				if etcd_conf then
 					local s = clock.time()
 					cfg = etcd_load(M, etcd_conf, cfg)
@@ -912,6 +926,9 @@ local M
 				return cfg
 			end
 
+			-- We cannot enforce ro if any of theese conditions not satisfied
+			-- Tarantool must be bootstraping with tidy_load and do not overwraps personal boxcfg
+			M._ro_enforcable = args.boxcfg == nil and args.tidy_load and type(box.cfg) == 'function'
 			local cfg = load_config() --[[@as table]]
 
 			M._flat = flatten(cfg)
@@ -1014,6 +1031,12 @@ local M
 						log.info("Reloading config after start")
 
 						local new_cfg = load_config()
+						if M._enforced_ro then
+							log.info("Enforcing RO (should be ro=%s) because told to", new_cfg.box.read_only)
+							new_cfg.box.read_only = true
+						end
+						M._enforced_ro = nil
+						M._ro_enforcable = false
 						local diff_box = value_diff(cfg.box, new_cfg.box)
 
 						-- since load_config loads config also for reloading it removes non-dynamic options

@@ -36,12 +36,12 @@ Only ETCD APIv2 now supported.
 
 Ready for production use.
 
-Latest stable release: `config 0.6.1`.
+Latest stable release: `config 0.7.0`.
 
 ## Installation
 
 ```bash
-tarantoolctl rocks --server=https://moonlibs.org install config 0.6.1
+tarantoolctl rocks --server=https://moonlibs.org install config 0.7.0
 ```
 
 Starting with Tarantool 2.10.0 you may add configuration of moonlibs.org into `config-5.1.lua`
@@ -559,7 +559,7 @@ require 'config' {
             :tomap()
     end,
     on_after_cfg = function(conf, cfg)
-        -- on_after_cfg is once after returning from box.cfg (Tarantool is already online)
+        -- on_after_cfg is called once after returning from box.cfg (Tarantool is already online)
         if cfg.cluster then
             vshard.storage.cfg({
                 sharding = cfg.sharding,

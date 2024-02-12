@@ -714,7 +714,7 @@ end
 
 local function do_cfg(boxcfg, cfg)
 	for key, val in pairs(cfg) do
-		if load_cfg.default_cfg[key] == nil and load_cfg.dynamic_cfg[key] == nil then
+		if load_cfg.template_cfg[key] == nil then
 			local warn = string.format("Dropping non-boxcfg option '%s' given '%s'",key,val)
 			log.warn("%s",warn)
 			print(warn)

@@ -714,15 +714,31 @@ end
 
 local function do_cfg(boxcfg, cfg)
 	for key, val in pairs(cfg) do
-		if load_cfg.default_cfg[key] == nil and load_cfg.dynamic_cfg[key] == nil then
+		if load_cfg.template_cfg[key] == nil then
 			local warn = string.format("Dropping non-boxcfg option '%s' given '%s'",key,val)
 			log.warn("%s",warn)
 			print(warn)
 			cfg[key] = nil
 		end
 	end
-	log.info("Just before box.cfg %s", yaml.encode(cfg))
-	boxcfg(cfg)
+
+	if type(box.cfg) ~= 'function' then
+		for key, val in pairs(cfg) do
+			if load_cfg.dynamic_cfg[key] == nil and box.cfg[key] ~= val then
+				local warn = string.format(
+					"Dropping dynamic option '%s' previous value '%s' new value '%s'",
+					key,box.cfg[key],val
+				)
+				log.warn("%s",warn)
+				print(warn)
+				cfg[key] = nil
+			end
+		end
+	end
+
+	log.info("Just before first box.cfg %s", yaml.encode(cfg))
+	-- Some boxcfg loves to rewrite passing table. We pass a copy of configuration
+	boxcfg(deep_copy(cfg))
 end
 
 
@@ -757,6 +773,7 @@ end
 ---@type moonlibs.config
 local M
 	M = setmetatable({
+		_VERSION = '0.7.1',
 		console = {};
 		---Retrieves value from config
 		---@overload fun(k: string, def: any?): any?
@@ -792,6 +809,7 @@ local M
 				enforce_ro = M._enforced_ro,
 			}
 		end,
+		_load_cfg = load_cfg,
 	},{
 		---Reinitiates moonlibs.config
 		---@param args moonlibs.config.opts
@@ -821,7 +839,6 @@ local M
 			M.master_selection_policy = args.master_selection_policy
 			M.default = args.default
 			M.strict_mode = args.strict_mode or args.strict or false
-			M._load_cfg = load_cfg
 			-- print("config", "loading ",file, json.encode(args))
 			if not file then
 				file = get_opt()
@@ -958,11 +975,33 @@ local M
 				end
 			end
 
-			local boxcfg = box.cfg
+			-- The code below is very hard to understand and quite hard to fix when any bugs occurs.
+			-- First, you must remember that this part of code is executed several times in very different environments:
+			-- 1) Tarantool may be started with tarantool <script-name>.lua and this part is required from the script
+			-- 2) Tarantool may be started under tarantoolctl (such as tarantoolctl start <script-name>.lua) then box.cfg will be wrapped
+			-- by tarantoolctl itself, and it be returned back to table box.cfg after first successfull execution
+			-- 3) Tarantool may be started inside docker container and default docker-entrypoint.lua also rewraps box.cfg
+			-- 4) User might want to overwrite box.cfg with his function via args.boxcfg. Though, this method is not recommended
+			-- it is possible in some environments
+			-- 5) User might want to "wrap" box.cfg with his own middleware via (args.wrap_box_cfg). It is more recommended, because
+			-- full algorithm of tidy_load and ro-enforcing is preserved for the user.
+
+			-- Moreover, first run of box.cfg in the life of the process allows to specify static box.cfg options, such as pid_file, log
+			-- and many others.
+			-- But, second reconfiguration of box.cfg (due to reload, or reconfiguration in fencing must never touch static options)
+			-- Part of this is fixed in `do_cfg` method of this codebase. But! Tarantool is buggy, so some options such as `log` appears to
+			-- be dynamic (it is listed in load_cfg.dynamic_cfg) but in practices log is static option.
+
+			-- do_cfg calls under the hood first_cfg or redo_cfg based on type of `box.cfg` (when function -- then it is first_cfg,
+			-- otherwise -- redo_cfg).
+
+			-- Because many wrappers in docker-entrypoint.lua and tarantoolctl LOVES to perform non-redoable actions inside box.cfg and
+			-- switch box.cfg back to builtin tarantool box.cfg, following code MUST NEVER cache value of box.cfg
 
 			if args.boxcfg then
 				do_cfg(args.boxcfg, cfg.box)
 			else
+				local boxcfg
 				if args.wrap_box_cfg then
 					boxcfg = args.wrap_box_cfg
 				end
@@ -1026,7 +1065,7 @@ local M
 							end
 						end
 
-						do_cfg(boxcfg, cfg.box)
+						do_cfg(boxcfg or box.cfg, cfg.box)
 
 						log.info("Reloading config after start")
 
@@ -1054,14 +1093,14 @@ local M
 
 						if diff_box then
 							log.info("Reconfigure after load with %s",require'json'.encode(diff_box))
-							do_cfg(boxcfg, diff_box)
+							do_cfg(boxcfg or box.cfg, diff_box)
 						else
 							log.info("Config is actual after load")
 						end
 
 						M._flat = flatten(new_cfg)
 					else
-						do_cfg(boxcfg, cfg.box)
+						do_cfg(boxcfg or box.cfg, cfg.box)
 					end
 				else
 					local replication     = cfg.box.replication_source or cfg.box.replication
@@ -1073,12 +1112,12 @@ local M
 						cfg.box.replication        = nil
 						cfg.box.replication_source = nil
 
-						do_cfg(boxcfg, cfg.box)
+						do_cfg(boxcfg or box.cfg, cfg.box)
 
 						cfg.box.replication        = r
 						cfg.box.replication_source = rs
 					else
-						do_cfg(boxcfg, cfg.box)
+						do_cfg(boxcfg or box.cfg, cfg.box)
 					end
 				end
 			end

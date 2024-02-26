@@ -32,7 +32,7 @@ jobs:
       run: mv luacov.stats.out luacov.stats.out-${{matrix.version}}
     - uses: actions/upload-artifact@master
       with:
-        name: luacov.stats.out
+        name: luacov.stats.out-${{matrix.version}}
         path: luacov.stats.out-${{matrix.version}}
   run-coverage-report:
     runs-on: ubuntu-latest
@@ -46,9 +46,11 @@ jobs:
       run: tarantoolctl rocks install --server=https://luarocks.org luacov-coveralls 0.2.3
     - name: install luacov-console 1.2.0
       run: tarantoolctl rocks --server http://moonlibs.github.io/rocks install luacov-console 1.2.0
-    - uses: actions/download-artifact@master
+    - name: Download run artifacts
+      uses: actions/download-artifact@v4
       with:
-        name: luacov.stats.out
+        pattern: luacov.stats.out-*
+        merge-multiple: true
     - name: debug
       run: ls -la .
     - name: merge luacov.stats.out

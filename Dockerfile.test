@@ -1,5 +1,5 @@
 ARG IMAGE=1.10.14
-FROM config-test-builder as builder
+FROM moonlibs-config-test-builder:latest as builder
 
 FROM tarantool/tarantool:${IMAGE}
 

@@ -4,7 +4,7 @@ run-etcd:
 	make -C test run-compose-etcd
 
 config-test-builder:
-	docker build -t config-test-builder -f Dockerfile.build .
+	docker build -t moonlibs-config-test-builder:latest -f Dockerfile.build .
 
 config-test-%: config-test-builder run-etcd
 	docker build -t $(@) --build-arg IMAGE=$(subst config-test-,,$@) -f Dockerfile.test .

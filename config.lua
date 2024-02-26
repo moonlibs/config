@@ -9,6 +9,7 @@ local yaml = require 'yaml'.new()
 local digest = require 'digest'
 local fiber  = require 'fiber'
 local clock  = require 'clock'
+local uri    = require 'uri'
 json.cfg{ encode_invalid_as_nil = true }
 yaml.cfg{ encode_use_tostring = true }
 
@@ -590,6 +591,11 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	etcd:discovery()
 
 	local all_cfg = etcd:get_all()
+
+	function M.etcd.get_all_cached()
+		return all_cfg
+	end
+
 	if etcd_conf.print_config then
 		print("Loaded config from etcd",yaml.encode(all_cfg))
 	end
@@ -599,7 +605,9 @@ local function etcd_load( M, etcd_conf, local_cfg )
 	local instance_cfg = all_instances_cfg[instance_name]
 	assert(instance_cfg,"Instance name "..instance_name.." is not known to etcd")
 
-	local all_clusters_cfg = all_cfg.clusters or all_cfg.shards
+	all_cfg.clusters = all_cfg.clusters or all_cfg.shards
+	all_cfg.shards = nil
+	local all_clusters_cfg = all_cfg.clusters
 
 	local master_selection_policy
 	local cluster_cfg
@@ -810,6 +818,62 @@ local M
 			}
 		end,
 		_load_cfg = load_cfg,
+		sharding = function()
+			local all_cfg = M.etcd.get_all_cached()
+
+			-- common vshard cfg
+			local cfg = table.deepcopy(all_cfg.common.vshard or {})
+
+			local creds = M.get('credentials.sharding', {})
+			if type(creds) ~= 'table' then
+				creds = {}
+			end
+			-- default sharding creds are guest:""
+			creds.login = creds.login or 'guest'
+			creds.password = creds.password or ''
+
+			local rebalancer_name = cfg.rebalancer
+			cfg.rebalancer = nil
+
+			local sharding = {}
+			-- construct sharding table
+			for rs_name, replicaset in pairs(all_cfg.clusters) do
+				local replicas = {}
+				for instance_name, instance in pairs(all_cfg.instances) do
+					if instance.cluster == rs_name then
+						local remote = assert(uri.parse(instance.box.remote_addr or instance.box.listen))
+						remote.login = creds.login
+						remote.password = creds.password
+						local replica_zone = nil
+						if type(instance.vshard) == 'table' then
+							replica_zone = instance.vshard.zone -- can be nil
+						end
+						replicas[instance.box.instance_uuid] = {
+							name   = instance_name,
+							uuid   = instance.box.uuid,
+							uri    = uri.format(remote, true),
+							master = replicaset.master == instance_name,
+							zone   = replica_zone,
+						}
+					end
+				end
+				local rs = {}
+				rs.replicas = replicas
+				if type(replicaset.vshard) == 'table' then
+					rs.weight = replicaset.vshard.weight
+					rs.lock = replicaset.vshard.lock
+				end
+
+				if rebalancer_name then
+					rs.rebalancer = rebalancer_name == rs_name
+				end
+
+				sharding[replicaset.replicaset_uuid] = rs
+			end
+
+			-- all other fields from common/vshard are left without any changes
+			return sharding
+		end,
 	},{
 		---Reinitiates moonlibs.config
 		---@param args moonlibs.config.opts

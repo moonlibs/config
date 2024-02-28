@@ -1129,7 +1129,7 @@ local M
 
 			local msp = config.get('sys.master_selection_policy')
 			if type(cfg.etcd) == 'table'
-				and config.get('etcd.fencing_enabled')
+				and config.get('etcd.fencing_enabled') == true
 				and (msp == 'etcd.cluster.master' or msp == 'etcd.cluster.vshard')
 				and type(cfg.cluster) == 'string' and cfg.cluster ~= ''
 				and config.get('etcd.reduce_listing_quorum') ~= true

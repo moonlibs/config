@@ -134,6 +134,9 @@ local function reflect_internals()
 				end
 			end
 			peekf = vars.reconfig_modules
+		elseif vars.orig_call and vars.wrapper_impl and type(vars.orig_call) == 'function' and type(vars.wrapper_impl) == 'function' then
+			peekf = vars.orig_call
+			table.insert(steps,"queue-cfg_call")
 		else
 			for k,v in pairs(vars) do log.info("var %s=%s",k,v) end
 			error(string.format("Bad vars for %s after steps: %s", peekf, table.concat(steps, ", ")))

@@ -1,5 +1,3 @@
-version: "3"
-
 x-env: &env
   ETCDCTL_API: 2
   ETCD_ENABLE_V2: true

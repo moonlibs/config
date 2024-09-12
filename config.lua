@@ -386,7 +386,7 @@ master_selection_policies = {
 			cfg.box.read_only = true
 		end
 
-		log.info("Using policy etcd.instance.read_only, read_only=%s",cfg.box.read_only)
+		log.info("Using policy etcd.instance.read_only (deperecated), read_only=%s",cfg.box.read_only)
 		return cfg
 	end;
 	['etcd.cluster.master'] = function(M, instance_name, common_cfg, instance_cfg, cluster_cfg, local_cfg)
@@ -419,6 +419,17 @@ master_selection_policies = {
 		end
 
 		deep_merge(cfg, local_cfg)
+		if cfg.box.replication_anon then
+			if cluster_cfg.master == instance_name then
+				log.error("Instance %s is declared as cluster master, and can't be replication_anon", instance_name)
+				cfg.box.replication_anon = nil
+			else
+				log.info("Instance is configured as anon replica, drop cluster_uuid, instance_uuid and enforce read_only=true")
+				cfg.box.instance_uuid = nil
+				cfg.box.replicaset_uuid = nil
+				cfg.box.read_only = true
+			end
+		end
 
 		return cfg
 	end;
@@ -458,6 +469,10 @@ master_selection_policies = {
 		end
 
 		deep_merge(cfg, local_cfg)
+		if cfg.box.replication_anon then
+			log.error("etcd.cluster.raft does not support replication_anon=true (option was dropped)")
+			cfg.box.replication_anon = nil
+		end
 
 		return cfg
 	end;

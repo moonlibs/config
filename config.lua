@@ -776,7 +776,7 @@ end
 ---@type moonlibs.config
 local M
 	M = setmetatable({
-		_VERSION = '0.7.1',
+		_VERSION = '0.7.2',
 		console = {};
 		---Retrieves value from config
 		---@overload fun(k: string, def: any?): any?

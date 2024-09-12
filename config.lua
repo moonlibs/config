@@ -992,11 +992,7 @@ local M
 			-- Moreover, first run of box.cfg in the life of the process allows to specify static box.cfg options, such as pid_file, log
 			-- and many others.
 			-- But, second reconfiguration of box.cfg (due to reload, or reconfiguration in fencing must never touch static options)
-			-- Part of this is fixed in `do_cfg` method of this codebase. But! Tarantool is buggy, so some options such as `log` appears to
-			-- be dynamic (it is listed in load_cfg.dynamic_cfg) but in practices log is static option.
-
-			-- do_cfg calls under the hood first_cfg or redo_cfg based on type of `box.cfg` (when function -- then it is first_cfg,
-			-- otherwise -- redo_cfg).
+			-- Part of this is fixed in `do_cfg` method of this codebase.
 
 			-- Because many wrappers in docker-entrypoint.lua and tarantoolctl LOVES to perform non-redoable actions inside box.cfg and
 			-- switch box.cfg back to builtin tarantool box.cfg, following code MUST NEVER cache value of box.cfg

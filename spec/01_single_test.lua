@@ -1,5 +1,4 @@
 local t = require 'luatest' --[[@as luatest]]
-local uri = require 'uri'
 
 ---@class test.config.single:luatest.group
 local g = t.group('single', {

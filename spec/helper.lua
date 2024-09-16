@@ -60,7 +60,7 @@ function h.get_etcd()
 		debug = true,
 	}
 
-	t.helpers.retrying({ timeout = 5 }, function() etcd:discovery() end)
+	t.helpers.retrying({ timeout = 15 }, function() etcd:discovery() end)
 
 	return etcd
 end

@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ["1.10.15", "2.8.4", "2.10.6", "2.10.7-gc64-amd64", "2.11.0", "2.11.1"]
+        version: ["1.10.15", "2.8.4", "2.10.6", "2.10.7-gc64-amd64", "2.11.0", "2.11.1", "2.11.2"]
     steps:
     - uses: actions/checkout@master
     - uses: docker/setup-buildx-action@v2

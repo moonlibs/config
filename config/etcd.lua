@@ -266,7 +266,7 @@ function M:list(keyspath, opts)
 	end
 	local res, response = self:request("GET","keys"..keyspath, opts)
 	-- print(yaml.encode(res))
-	if res.node then
+	if res.node and res.node.key then
 		local result = self:recursive_extract(keyspath,res.node)
 		-- todo: make it with metatable
 		-- print(yaml.encode(result))
@@ -274,6 +274,9 @@ function M:list(keyspath, opts)
 		-- for _,n in pairs(res.node) do
 		-- 	print()
 		-- end
+	elseif res.node and (not res.node.key) then
+		-- Don't use "/" as a etcd prefix in config
+		error(('Failed to list keys by "%s", node.key is nil'):format(keyspath))
 	else
 		error(json.encode(res),2)
 	end

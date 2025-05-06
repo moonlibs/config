@@ -511,6 +511,7 @@ end
 ---@field prefix string Mandatory prefix inside etcd tree
 ---@field uuid? 'auto' When auto config generates replicaset_uuid and instance_uuid for nodes
 ---@field fixed? table Optional ETCD tree
+---@field local_cache? boolean Optional flag for cache etcd configuration between package reload
 
 ---Loads configuration from etcd and evaluate master_selection_policy
 ---@param M moonlibs.config
@@ -542,6 +543,10 @@ local function etcd_load( M, etcd_conf, local_cfg )
 		etcd = require 'config.etcd' (etcd_conf)
 	end
 	M.etcd = etcd
+
+	local local_cache_needed = etcd_conf.local_cache
+	local local_cache_used   = false
+	local local_cache_var    = '\0moonlibs.config.etcd_cache'
 
 	function M.etcd.get_common(e)
 		local common_cfg = e:list(prefix .. "/common")
@@ -590,12 +595,35 @@ local function etcd_load( M, etcd_conf, local_cfg )
 		return all_cfg
 	end
 
-	etcd:discovery()
-
-	local all_cfg = etcd:get_all()
-	if etcd_conf.print_config then
-		print("Loaded config from etcd",yaml.encode(all_cfg))
+	function M.etcd.get_all_from_cache(e)
+		return rawget(_G, local_cache_var)
 	end
+
+	local ok, discovery_err = pcall(etcd.discovery, etcd)
+	if not ok and local_cache_needed then
+		local_cache_used = true
+		log.error('Use local cache of cfg because etcd discovery failed: "%s"', discovery_err)
+	elseif not ok then
+		error(discovery_err)
+	end
+
+	local all_cfg
+	if local_cache_used then
+		all_cfg = etcd:get_all_from_cache()
+		assert(all_cfg, "Local etcd cache is empty")
+	else
+		all_cfg = etcd:get_all()
+		if local_cache_needed then
+			rawset(_G, local_cache_var, all_cfg)
+		end
+	end
+
+	if etcd_conf.print_config then
+		print("Loaded config from",
+			local_cache_used and 'etcd local cache' or 'etcd',
+			yaml.encode(all_cfg))
+	end
+
 	local common_cfg = all_cfg.common
 	local all_instances_cfg = all_cfg.instances
 
@@ -789,6 +817,8 @@ local M
 				def = k
 				k = self
 			end
+			assert(type(M._flat) == 'table', ('internal cfg (M._flat) have unexpected type "%s"'):format(type(M._flat)))
+
 			if M._flat[k] ~= nil then
 				return M._flat[k]
 			elseif def ~= nil then

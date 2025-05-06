@@ -158,7 +158,7 @@ function M:request(method, path, args )
 
 	local len = #self.endpoints
 	for i = 0, len - 1 do
-		local cur = self.current + i
+		local cur = (self.current or 1) + i
 		if cur > len then
 			cur = cur % len
 		end

@@ -812,6 +812,18 @@ local M
 				enforce_ro = M._enforced_ro,
 			}
 		end,
+		on_before_reload = function()	
+			-- stop reload if
+			-- * etcd is unavailable
+			-- * etcd has no configuration
+			if M.etcd then
+				log.info('Try to discovery etcd before reload')
+				M.etcd:discovery()
+
+				log.info('Try to get etcd config before reload')
+				assert(M.etcd:get_all(), 'etcd has no configuration')
+			end
+		end,
 		_load_cfg = load_cfg,
 	},{
 		---Reinitiates moonlibs.config
